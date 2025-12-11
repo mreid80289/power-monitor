@@ -9,19 +9,14 @@ import pytz
 REGION = "SE3"
 IS_VILLA = True 
 
-# 2025 FEES
-if IS_VILLA:
-    ELLEVIO_TRANSFER_FEE = 6.25   #
-    ELLEVIO_PEAK_FEE_PER_KW = 81.25 #
-    ELLEVIO_MONTHLY_FIXED = 292.0 #
-else:
-    ELLEVIO_TRANSFER_FEE = 26.0
-    ELLEVIO_PEAK_FEE_PER_KW = 0
-    ELLEVIO_MONTHLY_FIXED = 90.0
+# 2025 FEES (Standard Ellevio Villa)
+ELLEVIO_TRANSFER_FEE = 6.25   
+ELLEVIO_PEAK_FEE_PER_KW = 81.25 
+ELLEVIO_MONTHLY_FIXED = 292.0 
 
-ENERGY_TAX = 54.88 #
+ENERGY_TAX = 54.88 
 FORTUM_MARKUP = 17.5 
-FORTUM_MONTHLY_FIXED = 49.0 # Standard Fortum fee
+FORTUM_MONTHLY_FIXED = 49.0 
 
 def get_total_price(spot_ore):
     return (spot_ore * 1.25) + FORTUM_MARKUP + (ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX
@@ -51,7 +46,6 @@ def fetch_data():
         spot_ore = hour['SEK_per_kWh'] * 100
         total_ore = get_total_price(spot_ore)
         
-        # Danger Zone: Weekdays 07-20
         is_weekday = start.weekday() < 5
         is_peak_hour = 7 <= start.hour < 20
         is_danger = is_weekday and is_peak_hour
@@ -79,58 +73,75 @@ else:
 
     with st.expander("🧮 Calculators & Bill Estimator", expanded=False):
         
-        # TAB 1: APPLIANCES
-        tab1, tab2 = st.tabs(["Appliance Cost", "Bill Simulator"])
+        tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
         
+        # TAB 1: APPLIANCE
         with tab1:
             st.subheader("Vad kostar det?")
-            appliance = st.selectbox("Machine", ["Heaters (PAX)", "Sauna (2h)", "Dishwasher (1.5h)", "Washing Machine (2h)"])
+            # Updated List with Locations
+            appliance = st.selectbox("Select Machine", [
+                "Sauna [Guest House] (6kW)", 
+                "Heaters [Main House] (PAX)", 
+                "Heaters [Guest House] (PAX)",
+                "Washing Machine [Main House]",
+                "Dishwasher [Main House]"
+            ])
             
-            if "Heaters" in appliance:
-                num_heaters = st.slider("Heaters running?", 1, 10, 5)
+            # Logic
+            if "Sauna" in appliance: kwh_load = 6.0; duration=2.0; label="total"; house="Guest"
+            elif "Dishwasher" in appliance: kwh_load = 1.2; duration=1.5; label="total"; house="Main"
+            elif "Washing" in appliance: kwh_load = 1.5; duration=2.0; label="total"; house="Main"
+            elif "Heaters" in appliance:
+                num_heaters = st.slider("Number of Heaters?", 1, 10, 3)
                 kwh_load = num_heaters * 0.8
                 duration = 1.0; label="per hour"
-            elif "Sauna" in appliance: kwh_load = 6.0; duration=2; label="total"
-            elif "Dishwasher" in appliance: kwh_load = 1.2; duration=1.5; label="total"
-            elif "Washing" in appliance: kwh_load = 1.5; duration=2; label="total"
+                house = "Guest" if "Guest" in appliance else "Main"
             
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             if not curr_row.empty:
                 cost = (curr_row.iloc[0]['Total Price'] / 100) * kwh_load * duration
                 st.write(f"Run **NOW**: **{cost:.2f} kr** ({label})")
-        
-        # TAB 2: BILL SIMULATOR (FORENSIC TOOL)
+                
+                # Context-Aware Warnings
+                if "Sauna" in appliance:
+                    st.info(f"ℹ️ **Note:** This hits the **{house} House** bill. It will create a 6kW Peak (~487 kr) if run 07:00-20:00 weekdays.")
+                elif kwh_load > 3.0:
+                    st.warning(f"🔥 **Watch out:** This adds {kwh_load:.1f} kW to the **{house} House** peak!")
+
+        # TAB 2: DUAL BILL SIMULATOR
         with tab2:
-            st.subheader("🔮 Monthly Bill Predictor")
-            st.caption("Enter your monthly stats to predict the invoice.")
+            st.subheader("🔮 Full Property Invoice Predictor")
             
-            col_a, col_b = st.columns(2)
-            with col_a:
-                est_kwh = st.number_input("Total kWh", value=1069)
-            with col_b:
-                est_peak = st.number_input("Peak (kW)", value=7.8)
+            col1, col2 = st.columns(2)
             
-            # MATH
-            # 1. Fortum Variable: ~1.00 kr/kWh (Based on your bills)
-            fortum_var = est_kwh * 1.00 
-            fortum_fixed = FORTUM_MONTHLY_FIXED
-            
-            # 2. Ellevio Variable
-            ellevio_trans = est_kwh * (ELLEVIO_TRANSFER_FEE/100 * 1.25)
-            ellevio_tax = est_kwh * (ENERGY_TAX/100)
-            
-            # 3. Ellevio Fixed/Peak
-            ellevio_fixed = ELLEVIO_MONTHLY_FIXED
-            ellevio_peak = est_peak * ELLEVIO_PEAK_FEE_PER_KW
-            
-            total_fortum = fortum_var + fortum_fixed
-            total_ellevio = ellevio_trans + ellevio_tax + ellevio_fixed + ellevio_peak
-            grand_total = total_fortum + total_ellevio
+            # MAIN HOUSE INPUTS
+            with col1:
+                st.markdown("### 🏠 Main House")
+                main_kwh = st.number_input("Main kWh", value=1069)
+                main_peak = st.number_input("Main Peak (kW)", value=7.8)
+                
+                m_fortum = (main_kwh * 1.00) + FORTUM_MONTHLY_FIXED
+                m_ellevio_var = main_kwh * ((ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX)/100
+                m_ellevio_fixed = ELLEVIO_MONTHLY_FIXED + (main_peak * ELLEVIO_PEAK_FEE_PER_KW)
+                m_total = m_fortum + m_ellevio_var + m_ellevio_fixed
+                st.caption(f"Est: {m_total:.0f} kr")
+
+            # GUEST HOUSE INPUTS
+            with col2:
+                st.markdown("### 🏚️ Guest House")
+                guest_kwh = st.number_input("Guest kWh", value=517)
+                # Default guest peak 4.5kW (Oct historical)
+                guest_peak = st.number_input("Guest Peak (kW)", value=4.5)
+                
+                g_fortum = (guest_kwh * 1.00) + FORTUM_MONTHLY_FIXED
+                g_ellevio_var = guest_kwh * ((ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX)/100
+                g_ellevio_fixed = ELLEVIO_MONTHLY_FIXED + (guest_peak * ELLEVIO_PEAK_FEE_PER_KW)
+                g_total = g_fortum + g_ellevio_var + g_ellevio_fixed
+                st.caption(f"Est: {g_total:.0f} kr")
             
             st.divider()
-            st.write(f"**Fortum Bill:** {total_fortum:.0f} kr")
-            st.write(f"**Ellevio Bill:** {total_ellevio:.0f} kr (Peak Cost: {ellevio_peak:.0f} kr)")
-            st.success(f"**TOTAL PREDICTION:** {grand_total:.0f} kr")
+            grand_total = m_total + g_total
+            st.metric("TOTAL FOR BOTH HOUSES", f"{grand_total:.0f} kr")
 
     # --- MAIN DASHBOARD ---
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
@@ -147,6 +158,7 @@ else:
              st.caption(f"Spot: {spot} | Grid: {grid:.1f}")
 
     st.subheader("Price Forecast (High Load Highlighted)")
+    st.caption("Solid Bars = Peak Penalty Risk (07-20). Faded Bars = Safe Time.")
     
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
