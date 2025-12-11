@@ -8,44 +8,35 @@ import pytz
 # --- 2025 CONFIGURATION ---
 REGION = "SE3"  # Stockholm / Middle Sweden
 
-# 1. YOUR HOUSING TYPE (Change this to True if you live in a Villa/House)
+# 1. YOUR HOUSING TYPE (Set True if you live in a Villa/Rowhouse)
 IS_VILLA = True 
 
 # 2. ELLEVIO GRID FEES (2025 Rules)
-# Villa: Low transfer fee (~6 öre), but HIGH penalty for peaks (Effektavgift)
-# Apartment: Higher transfer fee (~26 öre), usually no peak penalty
 if IS_VILLA:
-    ELLEVIO_TRANSFER_FEE = 6.0   # öre/kWh (approx for 2025 villa)
+    ELLEVIO_TRANSFER_FEE = 6.25  # öre/kWh (2025 Villa rate)
 else:
-    ELLEVIO_TRANSFER_FEE = 26.0  # öre/kWh (approx for 2025 apt)
+    ELLEVIO_TRANSFER_FEE = 26.0  # öre/kWh (Standard Apartment rate)
 
 # 3. GOVERNMENT TAX (2025 Law)
-# Fixed at 54.88 öre incl VAT (43.9 ex VAT)
 ENERGY_TAX = 54.88
 
 # 4. FORTUM MARKUP (Calibrated from your Dec 2025 Invoice)
-# This covers the gap between Spot Price and your actual Invoice (~106 öre)
-# Includes VAT, Electricity Certificates, and likely "Miljöval" fee.
 FORTUM_MARKUP = 17.5 
 
 # --- FUNCTIONS ---
 def get_total_price(spot_ore):
     """Calculates the REAL cost you pay per kWh."""
-    # 1. Fortum Bill: (Spot + Markup) * VAT 25%
-    # Note: If markup already includes VAT in our config, we adjust math.
-    # Standard: ((Spot + Markup_Ex_VAT) * 1.25). 
-    # Simplified for your calibration: Spot * 1.25 + Fixed_Addons
+    # 1. Fortum: (Spot * 1.25 VAT) + Markup
     fortum_part = (spot_ore * 1.25) + FORTUM_MARKUP
     
-    # 2. Ellevio Bill: (Transfer * 1.25) + Tax
-    # Tax (54.88) is already VAT-included in 2025 tables.
+    # 2. Ellevio: (Transfer * 1.25 VAT) + Tax
     ellevio_part = (ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX
     
     return fortum_part + ellevio_part
 
 @st.cache_data(ttl=3600)
 def fetch_data():
-    """Fetches today's and tomorrow's prices from API."""
+    """Fetches prices and sets color based on the 2 SEK limit."""
     tz = pytz.timezone('Europe/Stockholm')
     today = datetime.now(tz)
     dates = [today, today + timedelta(days=1)]
@@ -65,25 +56,28 @@ def fetch_data():
     if not all_data:
         return None
 
-    # Process data
     rows = []
     for hour in all_data:
         start = datetime.fromisoformat(hour['time_start'])
         spot_ore = hour['SEK_per_kWh'] * 100
         total_ore = get_total_price(spot_ore)
         
+        # --- THE COLOR LOGIC ---
+        # If price > 200 öre (2 SEK), color it RED. Otherwise GREEN.
+        bar_color = "#ff4b4b" if total_ore > 200 else "#00c853"
+        
         rows.append({
             "Time": start,
             "Hour": start.hour,
             "Total Price": round(total_ore, 2),
             "Spot Price": round(spot_ore, 2),
-            "BarColor": "red" if total_ore > 300 else "green" # The 3 SEK Rule
+            "Color": bar_color
         })
     
     return pd.DataFrame(rows)
 
 # --- PAGE LAYOUT ---
-st.set_page_config(page_title="Power Monitor 2025", page_icon="⚡")
+st.set_page_config(page_title="Power Cost 2025", page_icon="⚡")
 st.title("⚡ My Power Cost")
 
 df = fetch_data()
@@ -113,23 +107,16 @@ else:
             st.caption(f"Spot Price: {spot} öre")
             st.caption(f"Grid+Tax: {(ELLEVIO_TRANSFER_FEE*1.25 + ENERGY_TAX):.1f} öre")
 
-    # 2. THE RED/GREEN CHART
+    # 2. THE CHART (Red Bars > 200 öre)
     st.subheader("Next 24 Hours")
     
-    # Filter: Show from 2 hours ago into the future
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
 
-    # Altair Chart for Custom Colors
     chart = alt.Chart(chart_data).mark_bar().encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M', title='Hour')),
         y=alt.Y('Total Price', title='Öre / kWh'),
-        # CONDITIONAL COLORING: Red if > 300, else Green
-        color=alt.condition(
-            alt.datum['Total Price'] > 300,
-            alt.value('#ff4b4b'),  # Red
-            alt.value('#00c853')   # Green
-        ),
+        color=alt.Color('Color', scale=None), 
         tooltip=['Time', 'Total Price', 'Spot Price']
     ).properties(height=300)
 
@@ -137,7 +124,7 @@ else:
 
     # 3. WARNINGS
     if IS_VILLA:
-        st.info("🏠 **VILLA MODE:** Remember the 'Effektavgift'. Running too many things at once costs extra, even if the price above is green!")
+        st.info("🏠 **VILLA MODE:** Low transfer fee, but watch out for PEAKS (running everything at once)!")
     
     with st.expander("Detailed Price List"):
         st.dataframe(df[['Time', 'Total Price', 'Spot Price']])
