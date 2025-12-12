@@ -130,7 +130,7 @@ else:
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
-            # --- CONDITIONAL LIVE DISPLAY (GUEST HOUSE ONLY) ---
+            # --- CONDITIONAL LIVE DISPLAY ---
             if selected_house == "Guest House":
                 if live_plug_power_w > 0:
                     st.success(f"🔌 **LIVE Office Heater:** {live_plug_power_w:.1f} W ({live_plug_power_kw:.3f} kW)")
@@ -139,9 +139,8 @@ else:
                 else:
                     st.info(f"🔌 **Office Heater:** Connected but Idle (0 W)")
             
-            # --- APPLIANCE LIST ---
             appliance = st.selectbox("Machine", [
-                "Office Heater (Guest House)", # Renamed
+                "Office Heater (Guest House)", 
                 "Sauna (2h)", 
                 "Dishwasher (1.5h)", 
                 "Washing Machine (2h)"
@@ -149,32 +148,39 @@ else:
             
             # --- CALCULATIONS ---
             if "Office Heater" in appliance:
-                # Use live data if available, otherwise default to 1.0 kW
                 usage_kw = live_plug_power_kw if live_plug_power_kw > 0 else 1.0
-                duration = 24.0 # For the 24h calc
-                label = "24 hours"
+                duration = 1.0 
             elif "Sauna" in appliance: usage_kw = 6.0; duration=2; label="total"
             elif "Dishwasher" in appliance: usage_kw = 1.2; duration=1.5; label="total"
             elif "Washing" in appliance: usage_kw = 1.5; duration=2; label="total"
             
-            # Current Hour Cost
+            # --- COST CALCULATION ---
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
             if not curr_row.empty:
-                # 1. Cost NOW (Instant)
+                # 1. Cost NOW
                 price_now = curr_row.iloc[0]['Total Price'] / 100
-                cost_now = price_now * usage_kw * (1.0 if "Heater" in appliance else duration)
+                cost_now = price_now * usage_kw * duration
                 
-                # 2. Cost 24H (For Heater)
                 if "Office Heater" in appliance:
-                    # Calculate average price for next 24h
-                    future_24h = df[df['Time'] >= now].head(24)
-                    if not future_24h.empty:
-                        avg_price_24h = future_24h['Total Price'].mean() / 100
-                        cost_24h = avg_price_24h * usage_kw * 24.0
-                        
+                    # 2. WORK DAY CALCULATION (05:30 - 19:00)
+                    today_rows = df[df['Time'].dt.date == now.date()]
+                    
+                    work_day_cost = 0.0
+                    if not today_rows.empty:
+                        for idx, row in today_rows.iterrows():
+                            h = row['Hour']
+                            p_kronor = row['Total Price'] / 100
+                            
+                            if h == 5: # 05:00-06:00 (Only count half hour: 05:30-06:00)
+                                work_day_cost += (p_kronor * usage_kw * 0.5)
+                            elif 6 <= h < 19: # 06:00-19:00 (Full hours)
+                                work_day_cost += (p_kronor * usage_kw * 1.0)
+                                
                         st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
-                        st.write(f"Run **24 Hours**: **{cost_24h:.2f} kr** (Continuous)")
+                        st.markdown(f"### 🗓️ Cost Today (05:30–19:00)")
+                        st.write(f"**{work_day_cost:.2f} kr**")
+                        st.caption(f"Based on {usage_kw:.3f} kW running continuously.")
                 else:
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
@@ -196,11 +202,8 @@ else:
             with col_b:
                 st.markdown("### 🏚️ Guest")
                 guest_kwh = st.number_input("Guest kWh", value=517)
-                
-                # Auto-fill peak if live data is high
                 default_guest_peak = max(3.6, live_plug_power_kw)
                 guest_peak = st.number_input("Peak (kW)", value=default_guest_peak)
-                
                 g_total = (guest_kwh * 1.00) + fortum_fixed_calc + \
                           (guest_kwh * ((ELLEVIO_TRANSFER_FEE*1.25)+ENERGY_TAX)/100) + \
                           (ELLEVIO_MONTHLY_FIXED + (guest_peak * ELLEVIO_PEAK_FEE_PER_KW))
@@ -209,7 +212,7 @@ else:
             st.divider()
             st.metric("TOTAL FOR BOTH", f"{(m_total + g_total):.0f} kr")
 
-    # --- MAIN DASHBOARD ---
+    # --- DASHBOARD ---
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
     if not current_row.empty:
         price = current_row.iloc[0]['Total Price']
@@ -224,7 +227,6 @@ else:
              st.caption(f"Spot: {spot} | Grid: {grid:.1f}")
 
     st.subheader("Price Forecast (24h)")
-    
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
     
@@ -237,7 +239,6 @@ else:
     )
     now_line_data = pd.DataFrame({'Time': [now]})
     rule = alt.Chart(now_line_data).mark_rule(color='orange', size=2).encode(x='Time')
-    
     st.altair_chart((bars + rule).properties(height=300), use_container_width=True)
 
     st.markdown("### 🎨 Signal Guide")
@@ -251,4 +252,3 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
-
