@@ -5,6 +5,16 @@ import altair as alt
 from datetime import datetime, timedelta
 import pytz
 
+# --- HIDE STREAMLIT STYLE ---
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
 # --- CONFIGURATION (VERIFIED OCT 2025 BILLS) ---
 REGION = "SE3"
 IS_VILLA = True 
@@ -18,17 +28,16 @@ ELLEVIO_MONTHLY_FIXED = 365.00  # kr/month
 ENERGY_TAX = 54.88 # öre/kWh
 
 # 3. FORTUM (ELECTRICITY)
-FORTUM_MARKUP = 4.88  # Markup + Cert (incl VAT)
+FORTUM_MARKUP = 4.88  
 FORTUM_BASE_FEE = 69.00
 FORTUM_PRISKOLLEN = 49.00
 
 def get_total_price(spot_ore):
-    # (Spot * 1.25 VAT) + Fortum Markup + (Grid Transfer * 1.25 VAT) + Energy Tax
     fortum_part = (spot_ore * 1.25) + FORTUM_MARKUP
     grid_part = (ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX
     return fortum_part + grid_part
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900) # Reduced cache to 15 mins to keep "Current Line" accurate
 def fetch_data():
     tz = pytz.timezone('Europe/Stockholm')
     today = datetime.now(tz)
@@ -45,7 +54,7 @@ def fetch_data():
         except:
             pass
             
-    if not all_data: return None
+    if not all_data: return None, None
 
     rows = []
     for hour in all_data:
@@ -66,21 +75,35 @@ def fetch_data():
             "Color": "#ff4b4b" if total_ore > 200 else "#00c853",
             "Opacity": 1.0 if is_danger else 0.3
         })
-    return pd.DataFrame(rows)
+    
+    # Return Data AND the current timestamp
+    fetch_time = datetime.now(tz).strftime("%H:%M")
+    return pd.DataFrame(rows), fetch_time
 
-st.set_page_config(page_title="Power Monitor Pro", page_icon="⚡", layout="centered")
-st.title("⚡ Power Monitor Pro")
+st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
+
+# --- HEADER WITH REFRESH & TIME ---
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.title("⚡ Power Monitor")
+with col2:
+    if st.button("🔄 Refresh"):
+        st.cache_data.clear()
+        st.rerun()
 
 # --- PROPERTY SELECTOR ---
 selected_house = st.selectbox("Select Property", ["Main House", "Guest House"])
 
-df = fetch_data()
+df, last_updated = fetch_data()
 
 if df is None:
     st.error("Could not fetch data.")
 else:
     tz = pytz.timezone('Europe/Stockholm')
     now = datetime.now(tz)
+    
+    # Show Last Updated Time
+    st.caption(f"Last updated: {last_updated}")
 
     with st.expander("🧮 Calculators & Bill Estimator", expanded=False):
         
@@ -107,9 +130,8 @@ else:
             has_priskollen = st.checkbox("Include 'Priskollen' Fee (49kr)?", value=True)
             fortum_fixed_calc = FORTUM_BASE_FEE + (FORTUM_PRISKOLLEN if has_priskollen else 0)
             
-            col1, col2 = st.columns(2)
-            
-            with col1:
+            col_a, col_b = st.columns(2)
+            with col_a:
                 st.markdown("### 🏠 Main")
                 main_kwh = st.number_input("kWh", value=1069)
                 main_peak = st.number_input("Peak (kW)", value=6.9)
@@ -118,7 +140,7 @@ else:
                           (ELLEVIO_MONTHLY_FIXED + (main_peak * ELLEVIO_PEAK_FEE_PER_KW))
                 st.caption(f"Est: {m_total:.0f} kr")
 
-            with col2:
+            with col_b:
                 st.markdown("### 🏚️ Guest")
                 guest_kwh = st.number_input("kWh", value=517)
                 guest_peak = st.number_input("Peak (kW)", value=3.6)
@@ -149,32 +171,36 @@ else:
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
     
-    chart = alt.Chart(chart_data).mark_bar().encode(
+    # 1. THE BAR CHART
+    bars = alt.Chart(chart_data).mark_bar().encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M')),
         y=alt.Y('Total Price'),
         color=alt.Color('Color', scale=None),
         opacity=alt.Opacity('Opacity', scale=None),
         tooltip=['Time', 'Total Price']
-    ).properties(height=300)
-    st.altair_chart(chart, use_container_width=True)
+    )
+    
+    # 2. THE 'YOU ARE HERE' LINE
+    # We create a single-row dataframe for the current time line
+    now_line_data = pd.DataFrame({'Time': [now]})
+    rule = alt.Chart(now_line_data).mark_rule(color='orange', size=2).encode(
+        x='Time'
+    )
+    
+    # Combine them
+    final_chart = (bars + rule).properties(height=300)
+    
+    st.altair_chart(final_chart, use_container_width=True)
 
-    # --- THE COLOR MATRIX (LEGEND) ---
+    # --- SIGNAL GUIDE ---
     st.markdown("### 🎨 Signal Guide")
-    
-    # Create 3 columns for the Matrix
     c1, c2, c3 = st.columns(3)
-    
     with c1:
-        st.success("🟢 **SAFE ZONE**")
-        st.caption("Night / Weekend")
-        st.markdown("- **Price:** Low\n- **Peak Penalty:** NO\n- **Action:** Run Everything!")
-        
+        st.success("🟢 **SAFE**")
+        st.caption("Night / Wknd")
     with c2:
         st.warning("🟢 **CAUTION**")
-        st.caption("Wkday 07:00–20:00")
-        st.markdown("- **Price:** Low\n- **Peak Penalty:** **YES**\n- **Action:** One machine at a time.")
-        
+        st.caption("Day 07-20")
     with c3:
         st.error("🔴 **EXPENSIVE**")
-        st.caption("Price > 2.00 SEK")
-        st.markdown("- **Price:** High\n- **Peak Penalty:** Depends\n- **Action:** Wait.")
+        st.caption("> 2.00 SEK")
