@@ -21,9 +21,9 @@ REGION = "SE3"
 IS_VILLA = True 
 
 # --- TUYA SMART PLUG CONFIG ---
-TUYA_ACCESS_ID = "YOUR_ACCESS_ID_HERE"      
-TUYA_ACCESS_SECRET = "YOUR_ACCESS_SECRET_HERE"     
-TUYA_DEVICE_ID = "YOUR_DEVICE_ID_HERE"
+TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
+TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
+TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
 # FEES
@@ -251,3 +251,4 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
+
