@@ -1,3 +1,4 @@
 streamlit
 requests
 pandas
+tuya-connector-python
