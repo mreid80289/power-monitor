@@ -1,8 +1,9 @@
+
 import streamlit as st
 import requests
 import pandas as pd
 import altair as alt
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import pytz
 from tuya_connector import TuyaOpenAPI
 
@@ -27,7 +28,7 @@ TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
 # PLUG SETTINGS
-# Your plug reports '10' for 1.0 kWh. So factor is 10.0.
+# '10' usually means the plug counts in 0.1 kWh increments (10 = 1.0 kWh)
 PLUG_SCALING_FACTOR = 10.0 
 
 # FEES
@@ -93,12 +94,8 @@ def fetch_data():
             "Opacity": 1.0 if is_danger else 0.3
         })
     
-    # Clean duplicates if API returns overlapping data
-    df = pd.DataFrame(rows)
-    df.drop_duplicates(subset=['Time'], inplace=True)
-    
     fetch_time = datetime.now(tz).strftime("%H:%M")
-    return df, fetch_time
+    return pd.DataFrame(rows), fetch_time
 
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
@@ -144,16 +141,26 @@ else:
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
+            # --- DYNAMIC MACHINE LIST ---
             if selected_house == "Guest House":
+                # Show Live Data
                 if live_power_w > 0:
                     st.success(f"🔌 **LIVE Office Heater:** {live_power_w:.1f} W ({live_power_kw:.3f} kW)")
                 else:
                     st.info(f"🔌 **Office Heater:** Idle (0 W)")
                 
-                # --- MACHINE LIST ---
-                machine_options = ["Office Heater (Guest House)", "Sauna (2h)"]
+                # Guest House Machine List
+                machine_options = [
+                    "Office Heater (Guest House)", 
+                    "Sauna (2h)", 
+                ]
             else:
-                machine_options = ["Heaters (PAX)", "Dishwasher (1.5h)", "Washing Machine (2h)"]
+                # Main House Machine List (No Heater Plug)
+                machine_options = [
+                    "Heaters (PAX)", 
+                    "Dishwasher (1.5h)", 
+                    "Washing Machine (2h)"
+                ]
             
             appliance = st.selectbox("Machine", machine_options)
             
@@ -165,7 +172,7 @@ else:
 
             if "Office Heater" in appliance:
                 usage_kw = live_power_kw if live_power_kw > 0 else 1.0
-                duration = 1.0
+                duration = 1.0 
             elif "Heaters (PAX)" in appliance:
                 num_heaters = st.slider("Heaters running?", 1, 10, 5)
                 usage_kw = num_heaters * 0.8; duration = 1.0; label="per hour"
@@ -176,50 +183,36 @@ else:
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
             if not curr_row.empty:
-                # 1. Cost NOW (Real-time)
+                # 1. Cost NOW
                 price_now = curr_row.iloc[0]['Total Price'] / 100
                 cost_now = price_now * usage_kw * duration
 
                 if "Office Heater" in appliance:
-                    # 2. WORK DAY CALCULATION (05:30 - 19:00)
-                    # Fixed Math: Calculate Avg Price for period * 13.5 hours
-                    # This prevents the "4x bug" if data has 15-min rows
+                    # 2. WORK DAY (05:30 - 19:00)
                     today_rows = df[df['Time'].dt.date == now.date()]
+                    work_day_cost = 0.0
+                    if not today_rows.empty:
+                        for idx, row in today_rows.iterrows():
+                            h = row['Hour']
+                            p_kronor = row['Total Price'] / 100
+                            if h == 5: work_day_cost += (p_kronor * usage_kw * 0.5)
+                            elif 6 <= h < 19: work_day_cost += (p_kronor * usage_kw * 1.0)
                     
-                    # Filter for 05:00 to 19:00
-                    work_rows = today_rows[(today_rows['Hour'] >= 5) & (today_rows['Hour'] < 19)]
-                    
-                    if not work_rows.empty:
-                        avg_work_price = work_rows['Total Price'].mean() / 100
-                        # 05:30 to 19:00 is 13.5 hours
-                        work_day_cost = avg_work_price * usage_kw * 13.5
-                    else:
-                        work_day_cost = 0.0
-
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
-                    
                     st.markdown(f"### 🗓️ Cost Today (05:30–19:00)")
                     st.write(f"**{work_day_cost:.2f} kr**")
-                    st.caption("Based on continuous running.")
 
-                    st.markdown(f"### 📅 This Month (Actual)")
-                    
-                    # --- MONTHLY OFFSET INPUT ---
-                    # Allows user to 'reset' the counter by subtracting a start value
-                    c_col1, c_col2 = st.columns([1,2])
-                    with c_col1:
-                        start_offset = st.number_input("Start Value:", value=0.0, step=1.0, help="Enter what the counter was on Day 1.")
-                    
+                    st.markdown(f"### 📅 This Month (Total)")
                     if total_kwh_accumulated > 0:
+                         # SCALED CALCULATION (Using 10.0 factor)
                          total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
-                         net_usage = max(0.0, total_kwh_real - start_offset)
-                         
-                         real_cost_accum = net_usage * avg_price_total 
-                         
-                         st.write(f"**{real_cost_accum:.2f} kr**")
-                         st.caption(f"Usage: {net_usage:.1f} kWh (Counter: {total_kwh_real})")
+                         estimated_cost_accum = total_kwh_real * avg_price_total 
+                         st.write(f"**{estimated_cost_accum:.2f} kr**")
+                         st.caption(f"Plug Counter: {total_kwh_real:.1f} kWh")
                     else:
-                        st.warning("Plug counter is 0 or offline.")
+                        days_passed = now.day
+                        cost_month_est = work_day_cost * days_passed
+                        st.write(f"**~{cost_month_est:.0f} kr** (Estimate)")
                 else:
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
