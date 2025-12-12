@@ -21,9 +21,9 @@ REGION = "SE3"
 IS_VILLA = True 
 
 # --- TUYA SMART PLUG CONFIG ---
-TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
-TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
-TUYA_DEVICE_ID = "364820008cce4e2efeda"
+TUYA_ACCESS_ID = "YOUR_ACCESS_ID_HERE"      
+TUYA_ACCESS_SECRET = "YOUR_ACCESS_SECRET_HERE"     
+TUYA_DEVICE_ID = "YOUR_DEVICE_ID_HERE"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
 # PLUG SETTINGS
@@ -203,7 +203,7 @@ else:
 
                     st.markdown(f"### 📅 This Month (Total)")
                     if total_kwh_accumulated > 0:
-                         # SCALED CALCULATION
+                         # SCALED CALCULATION (Using 10.0 factor)
                          total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
                          estimated_cost_accum = total_kwh_real * avg_price_total 
                          st.write(f"**{estimated_cost_accum:.2f} kr**")
@@ -283,4 +283,3 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
-
