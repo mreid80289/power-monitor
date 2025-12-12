@@ -21,10 +21,14 @@ REGION = "SE3"
 IS_VILLA = True 
 
 # --- TUYA SMART PLUG CONFIG ---
-TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
-TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
-TUYA_DEVICE_ID = "364820008cce4e2efeda"
+TUYA_ACCESS_ID = "YOUR_ACCESS_ID_HERE"      
+TUYA_ACCESS_SECRET = "YOUR_ACCESS_SECRET_HERE"     
+TUYA_DEVICE_ID = "YOUR_DEVICE_ID_HERE"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
+
+# PLUG SETTINGS
+# '10' usually means the plug counts in 0.1 kWh increments (10 = 1.0 kWh)
+PLUG_SCALING_FACTOR = 10.0 
 
 # FEES
 ELLEVIO_TRANSFER_FEE = 6.25    
@@ -41,7 +45,6 @@ def get_total_price(spot_ore):
     return fortum_part + grid_part
 
 def get_tuya_status():
-    """Fetches ALL data from the plug."""
     if "YOUR_" in TUYA_ACCESS_ID: return None, "Keys not set."
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
@@ -137,32 +140,41 @@ else:
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
+            # --- DYNAMIC MACHINE LIST ---
             if selected_house == "Guest House":
+                # Show Live Data
                 if live_power_w > 0:
                     st.success(f"🔌 **LIVE Office Heater:** {live_power_w:.1f} W ({live_power_kw:.3f} kW)")
                 else:
                     st.info(f"🔌 **Office Heater:** Idle (0 W)")
                 
-                with st.expander("🕵️ Debug: What does the plug know?", expanded=False):
-                    st.write("Looking for 'Total' counter:")
-                    st.json(plug_data)
+                # Guest House Machine List
+                machine_options = [
+                    "Office Heater (Guest House)", 
+                    "Sauna (2h)", 
+                ]
+            else:
+                # Main House Machine List (No Heater Plug)
+                machine_options = [
+                    "Heaters (PAX)", 
+                    "Dishwasher (1.5h)", 
+                    "Washing Machine (2h)"
+                ]
             
-            appliance = st.selectbox("Machine", [
-                "Office Heater (Guest House)", 
-                "Sauna (2h)", "Dishwasher (1.5h)", "Washing Machine (2h)"
-            ])
+            appliance = st.selectbox("Machine", machine_options)
             
             # --- COST CALCULATION ---
             avg_price_total = df['Total Price'].mean() / 100
             
-            # DEFAULT VALUES (Restored!)
-            usage_kw = 0.0
-            duration = 0.0
-            label = ""
+            # Defaults
+            usage_kw = 0.0; duration = 0.0; label = ""
 
             if "Office Heater" in appliance:
                 usage_kw = live_power_kw if live_power_kw > 0 else 1.0
                 duration = 1.0 
+            elif "Heaters (PAX)" in appliance:
+                num_heaters = st.slider("Heaters running?", 1, 10, 5)
+                usage_kw = num_heaters * 0.8; duration = 1.0; label="per hour"
             elif "Sauna" in appliance: usage_kw = 6.0; duration=2.0; label="total"
             elif "Dishwasher" in appliance: usage_kw = 1.2; duration=1.5; label="total"
             elif "Washing" in appliance: usage_kw = 1.5; duration=2.0; label="total"
@@ -170,12 +182,12 @@ else:
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
             if not curr_row.empty:
-                # 1. Cost NOW (Real-time)
+                # 1. Cost NOW
                 price_now = curr_row.iloc[0]['Total Price'] / 100
                 cost_now = price_now * usage_kw * duration
 
                 if "Office Heater" in appliance:
-                    # 2. WORK DAY CALCULATION (05:30 - 19:00)
+                    # 2. WORK DAY (05:30 - 19:00)
                     today_rows = df[df['Time'].dt.date == now.date()]
                     work_day_cost = 0.0
                     if not today_rows.empty:
@@ -191,19 +203,16 @@ else:
 
                     st.markdown(f"### 📅 This Month (Total)")
                     if total_kwh_accumulated > 0:
-                         # Attempt to scale if it looks too big (some plugs send 100 for 1.00)
-                         # We'll display raw first in debug, but here assuming /1000 for now or raw
-                         # Adjust divisor based on what we see in Debug box later
-                         estimated_cost_accum = (total_kwh_accumulated / 100.0) * avg_price_total 
+                         # SCALED CALCULATION
+                         total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
+                         estimated_cost_accum = total_kwh_real * avg_price_total 
                          st.write(f"**{estimated_cost_accum:.2f} kr**")
-                         st.caption(f"Based on Plug Counter: {total_kwh_accumulated}")
+                         st.caption(f"Plug Counter: {total_kwh_real:.1f} kWh")
                     else:
                         days_passed = now.day
                         cost_month_est = work_day_cost * days_passed
                         st.write(f"**~{cost_month_est:.0f} kr** (Estimate)")
-                        st.caption("Using daily estimate. Check 'Debug' box to enable Real Tracking.")
                 else:
-                    # RESTORED: Standard logic for other machines
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
         with tab2:
@@ -234,7 +243,7 @@ else:
             st.divider()
             st.metric("TOTAL FOR BOTH", f"{(m_total + g_total):.0f} kr")
 
-    # --- DASHBOARD (RESTORED!) ---
+    # --- DASHBOARD ---
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
     if not current_row.empty:
         price = current_row.iloc[0]['Total Price']
