@@ -1,4 +1,25 @@
-# --- PASSWORD PROTECTION ---
+import streamlit as st
+import requests
+import pandas as pd
+import altair as alt
+from datetime import datetime, timedelta
+import pytz
+from tuya_connector import TuyaOpenAPI
+
+# --- 1. PAGE CONFIG MUST BE FIRST ---
+st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
+
+# --- 2. HIDE STREAMLIT STYLE ---
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+# --- 3. PASSWORD PROTECTION ---
 def check_password():
     """Returns `True` if the user had the correct password."""
 
@@ -24,28 +45,11 @@ def check_password():
         
     return False
 
+# STOP HERE if password is wrong
 if not check_password():
-    st.stop()  # STOPS HERE if password is wrong. Nothing below this runs.
+    st.stop()
 
-# --- YOUR APP STARTS BELOW THIS LINE ---
-
-import streamlit as st
-import requests
-import pandas as pd
-import altair as alt
-from datetime import datetime, timedelta
-import pytz
-from tuya_connector import TuyaOpenAPI
-
-# --- HIDE STREAMLIT STYLE ---
-hide_st_style = """
-            <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            </style>
-            """
-st.markdown(hide_st_style, unsafe_allow_html=True)
+# --- 4. YOUR APP STARTS HERE ---
 
 # --- CONFIGURATION ---
 REGION = "SE3"
@@ -128,8 +132,6 @@ def fetch_data():
     df.drop_duplicates(subset=['Time'], inplace=True)
     fetch_time = datetime.now(tz).strftime("%H:%M")
     return df, fetch_time
-
-st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
 col1, col2 = st.columns([3, 1])
 with col1:
