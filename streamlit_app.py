@@ -28,6 +28,7 @@ if not check_password():
     st.stop()  # STOPS HERE if password is wrong. Nothing below this runs.
 
 # --- YOUR APP STARTS BELOW THIS LINE ---
+
 import streamlit as st
 import requests
 import pandas as pd
@@ -51,9 +52,9 @@ REGION = "SE3"
 IS_VILLA = True 
 
 # --- TUYA SMART PLUG CONFIG ---
-TUYA_ACCESS_ID = "YOUR_ACCESS_ID_HERE"      
-TUYA_ACCESS_SECRET = "YOUR_ACCESS_SECRET_HERE"     
-TUYA_DEVICE_ID = "YOUR_DEVICE_ID_HERE" # <--- Back to just the PLUG ID
+TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
+TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
+TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
 # PLUG SETTINGS
@@ -203,7 +204,6 @@ else:
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
             if not curr_row.empty:
-                # 1. Cost NOW
                 price_now = curr_row.iloc[0]['Total Price'] / 100
                 cost_now = price_now * usage_kw * duration
 
@@ -294,4 +294,3 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
-
