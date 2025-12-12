@@ -27,8 +27,7 @@ TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
 # PLUG SETTINGS
-# Based on your app (8.28) vs raw (828), factor is 100.0.
-# If raw is 10 and real is 1.0, factor is 10.0.
+# '10' in raw data = 1.0 kWh. Factor is 10.0.
 PLUG_SCALING_FACTOR = 10.0 
 
 # FEES
@@ -114,22 +113,13 @@ plug_data, error_msg = get_tuya_status()
 
 live_power_w = 0.0
 total_kwh_accumulated = 0.0
-today_kwh_maybe = 0.0 # NEW: Hunting for daily usage
 
 if plug_data:
     for item in plug_data:
-        # 1. LIVE POWER
         if item['code'] in ['cur_power', 'power']:
             live_power_w = item['value'] / 10.0
-        
-        # 2. TOTAL LIFETIME ENERGY
         if item['code'] in ['add_ele', 'total_forward_energy', 'energy_total']:
-            total_kwh_accumulated = item['value']
-            
-        # 3. DAILY ENERGY (The Grail!)
-        # We look for common codes for "Today"
-        if item['code'] in ['day_ele', 'today_energy', 'cur_day', 'this_day_energy']:
-            today_kwh_maybe = item['value']
+            total_kwh_accumulated = item['value'] 
 
 live_power_kw = live_power_w / 1000.0
 
@@ -183,44 +173,25 @@ else:
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
             if not curr_row.empty:
-                # 1. Cost NOW
                 price_now = curr_row.iloc[0]['Total Price'] / 100
                 cost_now = price_now * usage_kw * duration
 
                 if "Office Heater" in appliance:
-                    st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
+                    # 1. LIVE "BURN RATE"
+                    st.write(f"Run Rate NOW: **{cost_now:.2f} kr / hour**")
+                    st.caption("This is what it costs when the heater is ON.")
+                    
                     st.divider()
 
-                    # 2. TOTAL ACTUAL COST (The Trustworthy Number)
-                    st.markdown(f"### 📊 Actual Recorded Cost")
+                    # 2. TOTAL RECORDED COST (Actual History)
+                    st.markdown(f"### 📉 Total Recorded Cost")
                     if total_kwh_accumulated > 0:
                          total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
-                         
-                         # If we found a "Today" counter, show that!
-                         if today_kwh_maybe > 0:
-                             today_real = today_kwh_maybe / PLUG_SCALING_FACTOR
-                             cost_today_real = today_real * (price_now) # approx using current price or avg
-                             st.write(f"Today: **{cost_today_real:.2f} kr** ({today_real} kWh)")
-                         
-                         total_cost_real = total_kwh_real * avg_price_total 
-                         st.write(f"Lifetime Total: **{total_cost_real:.2f} kr**")
+                         estimated_cost_accum = total_kwh_real * avg_price_total 
+                         st.write(f"**{estimated_cost_accum:.2f} kr**")
                          st.caption(f"Based on Plug Counter: {total_kwh_real:.2f} kWh")
                     else:
-                        st.caption("Waiting for data...")
-
-                    # 3. PROJECTION (The Estimate)
-                    st.markdown(f"### 🔮 Projection (If Continuous)")
-                    # Fixed Math: Avg Price for Work Hours * 13.5 Hours * Current KW
-                    today_rows = df[df['Time'].dt.date == now.date()]
-                    work_rows = today_rows[(today_rows['Hour'] >= 5) & (today_rows['Hour'] < 19)]
-                    if not work_rows.empty:
-                        avg_work_price = work_rows['Total Price'].mean() / 100
-                        work_day_cost = avg_work_price * usage_kw * 13.5
-                    else: work_day_cost = 0.0
-                    
-                    st.write(f"Cost Today (05:30–19:00): **{work_day_cost:.2f} kr**")
-                    st.caption("⚠️ Estimate assumes heater NEVER turns off.")
-
+                        st.caption("No history data available yet.")
                 else:
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
@@ -292,12 +263,3 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
-
-    # --- PLUG INSPECTOR (DEBUG) ---
-    st.divider()
-    with st.expander("🕵️ Plug Inspector (Look here!)", expanded=False):
-        st.write("Does your plug allow us to see 'Today's Usage'? Check this list:")
-        if plug_data:
-            st.json(plug_data)
-        else:
-            st.warning("No data found. Check connections.")
