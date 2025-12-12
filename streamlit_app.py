@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import pandas as pd
@@ -26,10 +25,6 @@ TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"
 TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
 TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
-
-# PLUG SETTINGS
-# '10' usually means the plug counts in 0.1 kWh increments (10 = 1.0 kWh)
-PLUG_SCALING_FACTOR = 10.0 
 
 # FEES
 ELLEVIO_TRANSFER_FEE = 6.25    
@@ -94,8 +89,10 @@ def fetch_data():
             "Opacity": 1.0 if is_danger else 0.3
         })
     
+    df = pd.DataFrame(rows)
+    df.drop_duplicates(subset=['Time'], inplace=True)
     fetch_time = datetime.now(tz).strftime("%H:%M")
-    return pd.DataFrame(rows), fetch_time
+    return df, fetch_time
 
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
@@ -141,26 +138,35 @@ else:
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
-            # --- DYNAMIC MACHINE LIST ---
             if selected_house == "Guest House":
-                # Show Live Data
                 if live_power_w > 0:
                     st.success(f"🔌 **LIVE Office Heater:** {live_power_w:.1f} W ({live_power_kw:.3f} kW)")
                 else:
                     st.info(f"🔌 **Office Heater:** Idle (0 W)")
+
+                # --- PLUG CALIBRATION (NEW!) ---
+                with st.expander("🛠️ Plug Calibration", expanded=True):
+                    # 1. SCALING FACTOR
+                    # If raw is 828 and real is 8.28, factor is 100.
+                    # If raw is 82 and real is 8.2, factor is 10.
+                    scaling_factor = st.selectbox("Scaling Factor", [1.0, 10.0, 100.0, 1000.0], index=2, help="Adjust this until 'Total kWh' matches your app.")
+                    
+                    real_total_kwh = total_kwh_accumulated / scaling_factor
+                    st.caption(f"Raw Plug Data: {total_kwh_accumulated} -> Scaled: **{real_total_kwh:.2f} kWh**")
+                    
+                    # 2. START OF DAY OFFSET
+                    st.markdown("---")
+                    st.write("**Track 'Today's Usage'**")
+                    start_val = st.number_input("Enter Meter Reading at 00:00 (from App)", value=0.0, step=0.1, format="%.2f")
+                    
+                    usage_today_kwh = max(0.0, real_total_kwh - start_val)
+                    st.write(f"Usage Today: **{usage_today_kwh:.2f} kWh**")
+
                 
-                # Guest House Machine List
-                machine_options = [
-                    "Office Heater (Guest House)", 
-                    "Sauna (2h)", 
-                ]
+                # --- MACHINE LIST ---
+                machine_options = ["Office Heater (Guest House)", "Sauna (2h)"]
             else:
-                # Main House Machine List (No Heater Plug)
-                machine_options = [
-                    "Heaters (PAX)", 
-                    "Dishwasher (1.5h)", 
-                    "Washing Machine (2h)"
-                ]
+                machine_options = ["Heaters (PAX)", "Dishwasher (1.5h)", "Washing Machine (2h)"]
             
             appliance = st.selectbox("Machine", machine_options)
             
@@ -172,7 +178,7 @@ else:
 
             if "Office Heater" in appliance:
                 usage_kw = live_power_kw if live_power_kw > 0 else 1.0
-                duration = 1.0 
+                duration = 1.0
             elif "Heaters (PAX)" in appliance:
                 num_heaters = st.slider("Heaters running?", 1, 10, 5)
                 usage_kw = num_heaters * 0.8; duration = 1.0; label="per hour"
@@ -183,36 +189,41 @@ else:
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
             if not curr_row.empty:
-                # 1. Cost NOW
                 price_now = curr_row.iloc[0]['Total Price'] / 100
                 cost_now = price_now * usage_kw * duration
 
                 if "Office Heater" in appliance:
-                    # 2. WORK DAY (05:30 - 19:00)
-                    today_rows = df[df['Time'].dt.date == now.date()]
-                    work_day_cost = 0.0
-                    if not today_rows.empty:
-                        for idx, row in today_rows.iterrows():
-                            h = row['Hour']
-                            p_kronor = row['Total Price'] / 100
-                            if h == 5: work_day_cost += (p_kronor * usage_kw * 0.5)
-                            elif 6 <= h < 19: work_day_cost += (p_kronor * usage_kw * 1.0)
-                    
+                    # 1. LIVE NOW
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
-                    st.markdown(f"### 🗓️ Cost Today (05:30–19:00)")
-                    st.write(f"**{work_day_cost:.2f} kr**")
 
-                    st.markdown(f"### 📅 This Month (Total)")
-                    if total_kwh_accumulated > 0:
-                         # SCALED CALCULATION (Using 10.0 factor)
-                         total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
-                         estimated_cost_accum = total_kwh_real * avg_price_total 
-                         st.write(f"**{estimated_cost_accum:.2f} kr**")
-                         st.caption(f"Plug Counter: {total_kwh_real:.1f} kWh")
+                    # 2. USAGE TODAY (ACTUAL)
+                    # If user entered a start value, calculate REAL cost for today
+                    if start_val > 0:
+                        # Simple calculation: Usage Today * Avg Price Today
+                        today_rows = df[df['Time'].dt.date == now.date()]
+                        if not today_rows.empty:
+                            avg_price_today = today_rows['Total Price'].mean() / 100
+                            cost_today_real = usage_today_kwh * avg_price_today
+                            st.markdown(f"### 🗓️ Cost Today (Actual)")
+                            st.write(f"**{cost_today_real:.2f} kr**")
+                            st.caption(f"Based on {usage_today_kwh:.2f} kWh consumed since 00:00.")
+                    
+                    # 3. WORK DAY ESTIMATE (Fallback)
                     else:
-                        days_passed = now.day
-                        cost_month_est = work_day_cost * days_passed
-                        st.write(f"**~{cost_month_est:.0f} kr** (Estimate)")
+                        today_rows = df[df['Time'].dt.date == now.date()]
+                        work_rows = today_rows[(today_rows['Hour'] >= 5) & (today_rows['Hour'] < 19)]
+                        if not work_rows.empty:
+                            avg_work_price = work_rows['Total Price'].mean() / 100
+                            work_day_cost = avg_work_price * usage_kw * 13.5
+                            st.markdown(f"### 🗓️ Cost Today (05:30–19:00 Est)")
+                            st.write(f"**{work_day_cost:.2f} kr**")
+                            st.caption("Estimate based on continuous running. Enter Start Value above for exact.")
+
+                    # 4. MONTHLY TOTAL
+                    st.markdown(f"### 📅 Total Lifetime Cost")
+                    st.write(f"**{(real_total_kwh * avg_price_total):.2f} kr**")
+                    st.caption(f"Total Counter: {real_total_kwh:.2f} kWh")
+
                 else:
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
