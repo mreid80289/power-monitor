@@ -20,14 +20,20 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 REGION = "SE3"
 IS_VILLA = True 
 
-# --- TUYA SMART PLUG CONFIG ---
+# --- TUYA DEVICES CONFIG (NEW: TWO IDs) ---
+
 TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
 TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
-TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
-# PLUG SETTINGS
-# '10' in raw data = 1.0 kWh. Factor is 10.0.
+# 1. THE SMART PLUG (Reads Power)
+
+TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"  
+
+# 2. THE OFFICE HEATER (Controls Temp)
+TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm" 
+
+# PLUG SETTINGS (10 raw = 1.0 kWh)
 PLUG_SCALING_FACTOR = 10.0 
 
 # FEES
@@ -44,16 +50,28 @@ def get_total_price(spot_ore):
     grid_part = (ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX
     return fortum_part + grid_part
 
-def get_tuya_status():
+def get_tuya_status(device_id):
+    """Fetches status for ANY device ID."""
     if "YOUR_" in TUYA_ACCESS_ID: return None, "Keys not set."
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
         openapi.connect()
-        response = openapi.get(f'/v1.0/devices/{TUYA_DEVICE_ID}/status')
+        response = openapi.get(f'/v1.0/devices/{device_id}/status')
         if not response['success']: return None, response.get('msg', 'Error')
         return response['result'], None
     except Exception as e:
         return None, str(e)
+
+def send_tuya_command(device_id, code, value):
+    """Sends a command to ANY device ID."""
+    try:
+        openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
+        openapi.connect()
+        commands = {'commands': [{'code': code, 'value': value}]}
+        openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
+        return True
+    except:
+        return False
 
 @st.cache_data(ttl=900)
 def fetch_data():
@@ -85,10 +103,8 @@ def fetch_data():
         is_danger = is_weekday and is_peak_hour
         
         rows.append({
-            "Time": start,
-            "Hour": start.hour,
-            "Total Price": round(total_ore, 2),
-            "Spot Price": round(spot_ore, 2),
+            "Time": start, "Hour": start.hour,
+            "Total Price": round(total_ore, 2), "Spot Price": round(spot_ore, 2),
             "Color": "#ff4b4b" if total_ore > 200 else "#00c853",
             "Opacity": 1.0 if is_danger else 0.3
         })
@@ -101,74 +117,101 @@ def fetch_data():
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
 col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("⚡ Power Monitor")
-with col2:
+with col1: st.title("⚡ Power Monitor")
+with col2: 
     if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.rerun()
 
-# --- FETCH RAW TUYA DATA ---
-plug_data, error_msg = get_tuya_status()
-
-live_power_w = 0.0
-total_kwh_accumulated = 0.0
-
+# --- FETCH DATA ---
+# 1. Plug Data (Power)
+plug_data, plug_err = get_tuya_status(TUYA_PLUG_ID)
+live_power_w = 0.0; total_kwh_accumulated = 0.0
 if plug_data:
     for item in plug_data:
-        if item['code'] in ['cur_power', 'power']:
-            live_power_w = item['value'] / 10.0
-        if item['code'] in ['add_ele', 'total_forward_energy', 'energy_total']:
-            total_kwh_accumulated = item['value'] 
-
+        if item['code'] in ['cur_power', 'power']: live_power_w = item['value'] / 10.0
+        if item['code'] in ['add_ele', 'total_forward_energy', 'energy_total']: total_kwh_accumulated = item['value']
 live_power_kw = live_power_w / 1000.0
 
-# --- PROPERTY SELECTOR ---
-selected_house = st.selectbox("Select Property", ["Main House", "Guest House"])
+# 2. Heater Data (Temp)
+heater_data, heater_err = get_tuya_status(TUYA_HEATER_ID)
+target_temp = 20; heater_on = False
+if heater_data:
+    for item in heater_data:
+        if item['code'] == 'temp_set': target_temp = item['value']
+        if item['code'] == 'switch': heater_on = item['value']
 
+# --- UI START ---
+selected_house = st.selectbox("Select Property", ["Main House", "Guest House"])
 df, last_updated = fetch_data()
 
 if df is None:
-    st.error("Could not fetch data.")
+    st.error("Data Error")
 else:
     tz = pytz.timezone('Europe/Stockholm')
     now = datetime.now(tz)
     st.caption(f"Last updated: {last_updated}")
 
     with st.expander("🧮 Calculators & Bill Estimator", expanded=True):
-        
         tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
         
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
+            # --- GUEST HOUSE SPECIAL FEATURES ---
             if selected_house == "Guest House":
+                # A. LIVE POWER (From Plug)
                 if live_power_w > 0:
-                    st.success(f"🔌 **LIVE Office Heater:** {live_power_w:.1f} W ({live_power_kw:.3f} kW)")
+                    st.success(f"🔌 **LIVE Power:** {live_power_w:.1f} W ({live_power_kw:.3f} kW)")
                 else:
                     st.info(f"🔌 **Office Heater:** Idle (0 W)")
+                
+                # B. HEATER REMOTE (From Heater)
+                st.markdown("### 🔥 Remote Control")
+                if heater_data:
+                    c1, c2, c3 = st.columns([1,1,2])
+                    with c1:
+                        st.metric("Target", f"{target_temp}°C")
+                    with c2:
+                        st.metric("State", "ON" if heater_on else "OFF")
+                    with c3:
+                        # Controls
+                        sc1, sc2 = st.columns(2)
+                        with sc1:
+                            if st.button("❄️ -1°"):
+                                send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp - 1)
+                                st.rerun()
+                        with sc2:
+                            if st.button("🔥 +1°"):
+                                send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp + 1)
+                                st.rerun()
+                        
+                        if st.button(f"Turn {'OFF' if heater_on else 'ON'}", use_container_width=True):
+                            send_tuya_command(TUYA_HEATER_ID, 'switch', not heater_on)
+                            st.rerun()
+                else:
+                    st.warning("Heater Offline (Check ID)")
 
+                st.divider()
                 machine_options = ["Office Heater (Guest House)", "Sauna (2h)"]
             else:
                 machine_options = ["Heaters (PAX)", "Dishwasher (1.5h)", "Washing Machine (2h)"]
             
             appliance = st.selectbox("Machine", machine_options)
             
-            # --- COST CALCULATION ---
+            # --- COST CALCS ---
             avg_price_total = df['Total Price'].mean() / 100
-            
-            # Defaults
-            usage_kw = 0.0; duration = 0.0; label = ""
+            usage_kw = 0.0; duration = 0.0
 
             if "Office Heater" in appliance:
                 usage_kw = live_power_kw if live_power_kw > 0 else 1.0
                 duration = 1.0
             elif "Heaters (PAX)" in appliance:
-                num_heaters = st.slider("Heaters running?", 1, 10, 5)
-                usage_kw = num_heaters * 0.8; duration = 1.0; label="per hour"
-            elif "Sauna" in appliance: usage_kw = 6.0; duration=2.0; label="total"
-            elif "Dishwasher" in appliance: usage_kw = 1.2; duration=1.5; label="total"
-            elif "Washing" in appliance: usage_kw = 1.5; duration=2.0; label="total"
+                num_heaters = st.slider("Heaters?", 1, 10, 5)
+                usage_kw = num_heaters * 0.8; duration = 1.0
+            elif "Sauna" in appliance: usage_kw = 6.0; duration=2.0
+            elif "Dishwasher" in appliance: usage_kw = 1.2; duration=1.5
+            elif "Washing" in appliance: usage_kw = 1.5; duration=2.0
             
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
             
@@ -177,14 +220,9 @@ else:
                 cost_now = price_now * usage_kw * duration
 
                 if "Office Heater" in appliance:
-                    # 1. LIVE "BURN RATE"
                     st.write(f"Run Rate NOW: **{cost_now:.2f} kr / hour**")
-                    st.caption("This is what it costs when the heater is ON.")
                     
-                    st.divider()
-
-                    # 2. TOTAL RECORDED COST (Actual History)
-                    st.markdown(f"### 📉 Total Recorded Cost")
+                    st.markdown(f"### 📉 Total Lifetime Cost")
                     if total_kwh_accumulated > 0:
                          total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
                          estimated_cost_accum = total_kwh_real * avg_price_total 
@@ -193,7 +231,7 @@ else:
                     else:
                         st.caption("No history data available yet.")
                 else:
-                    st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
+                    st.write(f"Run **NOW**: **{cost_now:.2f} kr**")
 
         with tab2:
             st.subheader("🔮 Invoice Predictor")
@@ -254,12 +292,6 @@ else:
 
     st.markdown("### 🎨 Signal Guide")
     c1, c2, c3 = st.columns(3)
-    with c1:
-        st.success("🟢 **SAFE**")
-        st.caption("Night / Wknd")
-    with c2:
-        st.warning("🟢 **CAUTION**")
-        st.caption("Day 07-20")
-    with c3:
-        st.error("🔴 **EXPENSIVE**")
-        st.caption("> 2.00 SEK")
+    with c1: st.success("🟢 **SAFE**"); st.caption("Night / Wknd")
+    with c2: st.warning("🟢 **CAUTION**"); st.caption("Day 07-20")
+    with c3: st.error("🔴 **EXPENSIVE**"); st.caption("> 2.00 SEK")
