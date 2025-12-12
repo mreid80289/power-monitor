@@ -21,12 +21,12 @@ REGION = "SE3"
 IS_VILLA = True 
 
 # --- TUYA SMART PLUG CONFIG ---
-TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
-TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
-TUYA_DEVICE_ID = "364820008cce4e2efeda"
+TUYA_ACCESS_ID = "YOUR_ACCESS_ID_HERE"      
+TUYA_ACCESS_SECRET = "YOUR_ACCESS_SECRET_HERE"     
+TUYA_DEVICE_ID = "YOUR_DEVICE_ID_HERE"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
-# ELLEVIO & FORTUM FEES (Same as before)
+# FEES
 ELLEVIO_TRANSFER_FEE = 6.25    
 ELLEVIO_PEAK_FEE_PER_KW = 81.25 
 ELLEVIO_MONTHLY_FIXED = 365.00  
@@ -41,31 +41,20 @@ def get_total_price(spot_ore):
     return fortum_part + grid_part
 
 def get_tuya_power():
-    """Fetches real-time power (W) with DEBUGGING enabled."""
-    # Check if keys are generic placeholders
-    if "YOUR_" in TUYA_ACCESS_ID: 
-        return 0.0, "Keys not set."
-    
+    if "YOUR_" in TUYA_ACCESS_ID: return 0.0, "Keys not set."
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
         openapi.connect()
         response = openapi.get(f'/v1.0/devices/{TUYA_DEVICE_ID}/status')
         
-        # DEBUG: Print the raw response to the app so we can see what happened
-        if not response['success']:
-            return 0.0, f"Tuya Error: {response.get('msg', 'Unknown Error')}"
+        if not response['success']: return 0.0, response.get('msg', 'Error')
         
         for item in response['result']:
-            # Check for BOTH standard naming conventions
             if item['code'] in ['cur_power', 'power']:
-                raw_value = item['value']
-                # Tuya usually sends integer (2350 = 235.0 W). Divide by 10.
-                return (raw_value / 10.0), None 
-        
-        return 0.0, "Connected, but no 'Power' reading found on device."
-        
+                return (item['value'] / 10.0), None 
+        return 0.0, "No power reading"
     except Exception as e:
-        return 0.0, f"Script Error: {str(e)}"
+        return 0.0, str(e)
 
 @st.cache_data(ttl=900)
 def fetch_data():
@@ -118,7 +107,7 @@ with col2:
         st.cache_data.clear()
         st.rerun()
 
-# --- FETCH LIVE PLUG DATA (WITH DEBUG) ---
+# --- FETCH LIVE DATA ---
 live_plug_power_w, error_msg = get_tuya_power()
 live_plug_power_kw = live_plug_power_w / 1000.0
 
@@ -134,35 +123,60 @@ else:
     now = datetime.now(tz)
     st.caption(f"Last updated: {last_updated}")
 
-    with st.expander("🧮 Calculators & Bill Estimator", expanded=True): # Expanded by default to see debug
+    with st.expander("🧮 Calculators & Bill Estimator", expanded=True):
         
         tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
         
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
-            # --- DEBUG SECTION ---
-            # If we have a reading, show it green
-            if live_plug_power_w > 0:
-                st.success(f"🔌 **LIVE Plug Usage:** {live_plug_power_w:.1f} W ({live_plug_power_kw:.3f} kW)")
-            # If we have an error, show it red (ONLY in Guest House mode to avoid clutter)
-            elif error_msg and selected_house == "Guest House":
-                 st.error(f"⚠️ Plug Connection Failed: {error_msg}")
-                 st.caption("Check your Keys and Endpoint in the script.")
+            # --- CONDITIONAL LIVE DISPLAY (GUEST HOUSE ONLY) ---
+            if selected_house == "Guest House":
+                if live_plug_power_w > 0:
+                    st.success(f"🔌 **LIVE Office Heater:** {live_plug_power_w:.1f} W ({live_plug_power_kw:.3f} kW)")
+                elif error_msg:
+                    st.error(f"⚠️ Heater Connection Failed: {error_msg}")
+                else:
+                    st.info(f"🔌 **Office Heater:** Connected but Idle (0 W)")
             
-            appliance = st.selectbox("Machine", ["Heaters (PAX)", "Sauna (2h)", "Dishwasher (1.5h)", "Washing Machine (2h)"])
+            # --- APPLIANCE LIST ---
+            appliance = st.selectbox("Machine", [
+                "Office Heater (Guest House)", # Renamed
+                "Sauna (2h)", 
+                "Dishwasher (1.5h)", 
+                "Washing Machine (2h)"
+            ])
             
-            if "Heaters" in appliance:
-                num_heaters = st.slider("Heaters running?", 1, 10, 5)
-                kwh_load = num_heaters * 0.8; duration = 1.0; label="per hour"
-            elif "Sauna" in appliance: kwh_load = 6.0; duration=2; label="total"
-            elif "Dishwasher" in appliance: kwh_load = 1.2; duration=1.5; label="total"
-            elif "Washing" in appliance: kwh_load = 1.5; duration=2; label="total"
+            # --- CALCULATIONS ---
+            if "Office Heater" in appliance:
+                # Use live data if available, otherwise default to 1.0 kW
+                usage_kw = live_plug_power_kw if live_plug_power_kw > 0 else 1.0
+                duration = 24.0 # For the 24h calc
+                label = "24 hours"
+            elif "Sauna" in appliance: usage_kw = 6.0; duration=2; label="total"
+            elif "Dishwasher" in appliance: usage_kw = 1.2; duration=1.5; label="total"
+            elif "Washing" in appliance: usage_kw = 1.5; duration=2; label="total"
             
+            # Current Hour Cost
             curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
+            
             if not curr_row.empty:
-                cost = (curr_row.iloc[0]['Total Price'] / 100) * kwh_load * duration
-                st.write(f"Run **NOW**: **{cost:.2f} kr** ({label})")
+                # 1. Cost NOW (Instant)
+                price_now = curr_row.iloc[0]['Total Price'] / 100
+                cost_now = price_now * usage_kw * (1.0 if "Heater" in appliance else duration)
+                
+                # 2. Cost 24H (For Heater)
+                if "Office Heater" in appliance:
+                    # Calculate average price for next 24h
+                    future_24h = df[df['Time'] >= now].head(24)
+                    if not future_24h.empty:
+                        avg_price_24h = future_24h['Total Price'].mean() / 100
+                        cost_24h = avg_price_24h * usage_kw * 24.0
+                        
+                        st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
+                        st.write(f"Run **24 Hours**: **{cost_24h:.2f} kr** (Continuous)")
+                else:
+                    st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
         with tab2:
             st.subheader("🔮 Invoice Predictor")
@@ -237,4 +251,3 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
-
