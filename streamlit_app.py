@@ -227,23 +227,30 @@ else:
         with tab2:
             st.subheader("🔮 Invoice Predictor")
             has_priskollen = st.checkbox("Include 'Priskollen' Fee (49kr)?", value=True)
-            fortum_fixed = FORTUM_BASE_FEE + (FORTUM_PRISKOLLEN if has_priskollen else 0)
+            fortum_fixed_calc = FORTUM_BASE_FEE + (FORTUM_PRISKOLLEN if has_priskollen else 0)
             
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown("### 🏠 Main")
                 main_kwh = st.number_input("kWh", value=1069)
                 main_peak = st.number_input("Peak (kW)", value=6.9)
-                m_tot = (main_kwh * 1.00) + fortum_fixed + (main_kwh * ((ELLEVIO_TRANSFER_FEE*1.25)+ENERGY_TAX)/100) + (ELLEVIO_MONTHLY_FIXED + (main_peak * ELLEVIO_PEAK_FEE_PER_KW))
-                st.caption(f"Est: {m_tot:.0f} kr")
+                m_total = (main_kwh * 1.00) + fortum_fixed_calc + \
+                          (main_kwh * ((ELLEVIO_TRANSFER_FEE*1.25)+ENERGY_TAX)/100) + \
+                          (ELLEVIO_MONTHLY_FIXED + (main_peak * ELLEVIO_PEAK_FEE_PER_KW))
+                st.caption(f"Est: {m_total:.0f} kr")
+
             with col_b:
                 st.markdown("### 🏚️ Guest")
-                g_kwh = st.number_input("Guest kWh", value=517)
-                g_peak = st.number_input("Peak (kW)", value=max(3.6, live_power_kw))
-                g_tot = (g_kwh * 1.00) + fortum_fixed + (g_kwh * ((ELLEVIO_TRANSFER_FEE*1.25)+ENERGY_TAX)/100) + (ELLEVIO_MONTHLY_FIXED + (g_peak * ELLEVIO_PEAK_FEE_PER_KW))
-                st.caption(f"Est: {g_tot:.0f} kr")
+                guest_kwh = st.number_input("Guest kWh", value=517)
+                default_guest_peak = max(3.6, live_power_kw)
+                guest_peak = st.number_input("Peak (kW)", value=default_guest_peak)
+                g_total = (guest_kwh * 1.00) + fortum_fixed_calc + \
+                          (guest_kwh * ((ELLEVIO_TRANSFER_FEE*1.25)+ENERGY_TAX)/100) + \
+                          (ELLEVIO_MONTHLY_FIXED + (guest_peak * ELLEVIO_PEAK_FEE_PER_KW))
+                st.caption(f"Est: {g_total:.0f} kr")
+            
             st.divider()
-            st.metric("TOTAL FOR BOTH", f"{(m_tot + g_tot):.0f} kr")
+            st.metric("TOTAL FOR BOTH", f"{(m_total + g_total):.0f} kr")
 
     # --- DASHBOARD ---
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
@@ -251,31 +258,46 @@ else:
         price = current_row.iloc[0]['Total Price']
         spot = current_row.iloc[0]['Spot Price']
         grid = (ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX
+        
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Total Price", f"{price:.2f} öre", delta_color="inverse", delta="- Low" if price < 150 else "+ High")
+            st.metric("Total Price", f"{price:.2f} öre", delta_color="inverse", 
+                    delta="- Low" if price < 150 else "+ High")
         with col2:
              st.caption(f"Spot: {spot} | Grid: {grid:.1f}")
 
     st.subheader("Price Forecast (24h)")
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
-    bars = alt.Chart(chart_data).mark_bar().encode(x=alt.X('Time', axis=alt.Axis(format='%H:%M')), y=alt.Y('Total Price'), color=alt.Color('Color', scale=None), opacity=alt.Opacity('Opacity', scale=None), tooltip=['Time', 'Total Price'])
+    
+    bars = alt.Chart(chart_data).mark_bar().encode(
+        x=alt.X('Time', axis=alt.Axis(format='%H:%M')),
+        y=alt.Y('Total Price'),
+        color=alt.Color('Color', scale=None),
+        opacity=alt.Opacity('Opacity', scale=None),
+        tooltip=['Time', 'Total Price']
+    )
     now_line_data = pd.DataFrame({'Time': [now]})
     rule = alt.Chart(now_line_data).mark_rule(color='orange', size=2).encode(x='Time')
     st.altair_chart((bars + rule).properties(height=300), use_container_width=True)
 
     st.markdown("### 🎨 Signal Guide")
     c1, c2, c3 = st.columns(3)
-    with c1: st.success("🟢 **SAFE**"); st.caption("Night / Wknd")
-    with c2: st.warning("🟢 **CAUTION**"); st.caption("Day 07-20")
-    with c3: st.error("🔴 **EXPENSIVE**"); st.caption("> 2.00 SEK")
+    with c1:
+        st.success("🟢 **SAFE**")
+        st.caption("Night / Wknd")
+    with c2:
+        st.warning("🟢 **CAUTION**")
+        st.caption("Day 07-20")
+    with c3:
+        st.error("🔴 **EXPENSIVE**")
+        st.caption("> 2.00 SEK")
 
     # --- PLUG INSPECTOR (DEBUG) ---
     st.divider()
-    with st.expander("🕵️ Plug Inspector (Check this for 'Today's Usage')", expanded=False):
+    with st.expander("🕵️ Plug Inspector (Look here!)", expanded=False):
+        st.write("Does your plug allow us to see 'Today's Usage'? Check this list:")
         if plug_data:
-            st.write("Look for a code like 'day_ele' or 'cur_day' with a value like 30 or 50.")
             st.json(plug_data)
         else:
             st.warning("No data found. Check connections.")
