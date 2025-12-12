@@ -66,31 +66,28 @@ TUYA_HEATER_ID = "bf070e912f4a1df81dakvu"
 # PLUG SETTINGS
 PLUG_SCALING_FACTOR = 10.0 
 
-# --- FEES & TAXES (CALIBRATED) ---
-# Ellevio Transfer: 6.25 inkl moms -> 5.00 exkl moms
-ELLEVIO_TRANSFER_FEE_EX_VAT = 5.00    
-# Energy Tax is usually taxed, bill says 54.88 inkl moms
-ENERGY_TAX_INC_VAT = 54.88 
+# --- FEES & TAXES (CALIBRATED DEC 2025) ---
+# Ellevio: 6.25 (Transfer) + 54.88 (Tax) = 61.13 öre/kWh (All Inc VAT)
+GRID_VARIABLE_FEE_INC_VAT = 61.13    
 
-# Fortum Markup: 2.00 + 1.90 (Cert) + 11.67 (Var) = 15.57 exkl moms -> 19.46 inkl moms
-FORTUM_MARKUP_INC_VAT = 19.46  
+# Fortum Add-ons (Ex VAT): 
+# 2.00 (Markup) + 1.90 (Cert) + 11.67 (Variable) = 15.57 öre/kWh
+FORTUM_ADDONS_EX_VAT = 15.57  
 
-# Monthly Fixed Costs (Inkl Moms)
+# Monthly Fixed Costs (Inc VAT)
 ELLEVIO_MONTHLY_FIXED = 365.00  
 ELLEVIO_PEAK_FEE_PER_KW = 81.25 
 FORTUM_BASE_FEE = 69.00
 FORTUM_PRISKOLLEN = 49.00
 
 def get_total_price(spot_ore):
-    # Spot is ex VAT. We add 25% VAT.
-    # Fortum Markup is already Inc VAT.
-    fortum_part = (spot_ore * 1.25) + FORTUM_MARKUP_INC_VAT
+    # 1. Electricity: (Spot Price + Fortum Add-ons) * 1.25 VAT
+    elec_part = (spot_ore + FORTUM_ADDONS_EX_VAT) * 1.25
     
-    # Grid Transfer is Ex VAT in config, so we add 25%.
-    # Energy Tax is Inc VAT in config.
-    grid_part = (ELLEVIO_TRANSFER_FEE_EX_VAT * 1.25) + ENERGY_TAX_INC_VAT
+    # 2. Grid: Already includes VAT from your bill
+    grid_part = GRID_VARIABLE_FEE_INC_VAT
     
-    return fortum_part + grid_part
+    return elec_part + grid_part
 
 def get_tuya_status(device_id):
     if "YOUR_" in TUYA_ACCESS_ID: return None, "Keys not set."
@@ -271,17 +268,16 @@ else:
                 main_kwh = st.number_input("kWh", value=1680)
                 main_peak = st.number_input("Peak (kW)", value=7.9)
                 
-                # Grid Cost = Fixed + Transfer + Peak
+                # Grid Cost = Fixed + Variable + Peak
                 grid_cost = ELLEVIO_MONTHLY_FIXED + \
-                            (main_kwh * ((ELLEVIO_TRANSFER_FEE_EX_VAT*1.25) + ENERGY_TAX_INC_VAT)/100) + \
+                            (main_kwh * (GRID_VARIABLE_FEE_INC_VAT / 100)) + \
                             (main_peak * ELLEVIO_PEAK_FEE_PER_KW)
                 
-                # Electricity Cost = Fixed + Spot + Markup
-                # Note: This is a rough estimator. Real bill sums hourly.
-                # We use a static average spot price for estimation (e.g. 70 öre)
+                # Electricity Cost = Fixed + (Spot + Addons)*VAT
+                # Note: Rough estimate using Avg Spot
                 est_spot_price = 70.0 
                 elec_cost = fortum_fixed_calc + \
-                            (main_kwh * ((est_spot_price*1.25) + FORTUM_MARKUP_INC_VAT)/100)
+                            (main_kwh * ((est_spot_price + FORTUM_ADDONS_EX_VAT) * 1.25)/100)
 
                 st.caption(f"Est: {grid_cost + elec_cost:.0f} kr")
 
@@ -292,11 +288,11 @@ else:
                 guest_peak = st.number_input("Peak (kW)", value=default_guest_peak)
                 
                 g_grid = ELLEVIO_MONTHLY_FIXED + \
-                         (guest_kwh * ((ELLEVIO_TRANSFER_FEE_EX_VAT*1.25) + ENERGY_TAX_INC_VAT)/100) + \
+                         (guest_kwh * (GRID_VARIABLE_FEE_INC_VAT / 100)) + \
                          (guest_peak * ELLEVIO_PEAK_FEE_PER_KW)
                 
                 g_elec = fortum_fixed_calc + \
-                         (guest_kwh * ((est_spot_price*1.25) + FORTUM_MARKUP_INC_VAT)/100)
+                         (guest_kwh * ((est_spot_price + FORTUM_ADDONS_EX_VAT) * 1.25)/100)
 
                 st.caption(f"Est: {g_grid + g_elec:.0f} kr")
             
@@ -308,14 +304,14 @@ else:
     if not current_row.empty:
         price = current_row.iloc[0]['Total Price']
         spot = current_row.iloc[0]['Spot Price']
-        grid = (ELLEVIO_TRANSFER_FEE_EX_VAT * 1.25) + ENERGY_TAX_INC_VAT
         
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Total Price", f"{price:.2f} öre", delta_color="inverse", 
                     delta="- Low" if price < 150 else "+ High")
         with col2:
-             st.caption(f"Spot: {spot} | Grid: {grid:.1f}")
+             # Just showing grid variable part here for reference
+             st.caption(f"Spot: {spot} | Grid: {GRID_VARIABLE_FEE_INC_VAT:.1f}")
 
     st.subheader("Price Forecast (24h)")
     start_view = now - timedelta(hours=2)
