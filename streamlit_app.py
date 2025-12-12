@@ -22,9 +22,9 @@ IS_VILLA = True
 
 # --- TUYA SMART PLUG CONFIG (FILL THESE IN!) ---
 # Get these from iot.tuya.com
-TUYA_ACCESS_ID = qdqkmyefdpqav3ckvnxm
-TUYA_ACCESS_SECRET = c1b019580ece45a2902c9d0df19a8e02
-TUYA_DEVICE_ID = 364820008cce4e2efeda
+TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"
+TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"
+TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com" # EU Data Center
 
 # 1. ELLEVIO (NETWORK)
@@ -236,3 +236,4 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
+
