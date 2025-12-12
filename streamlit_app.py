@@ -4,6 +4,7 @@ import pandas as pd
 import altair as alt
 from datetime import datetime, timedelta
 import pytz
+from tuya_connector import TuyaOpenAPI # NEW LIBRARY
 
 # --- HIDE STREAMLIT STYLE ---
 hide_st_style = """
@@ -19,13 +20,20 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 REGION = "SE3"
 IS_VILLA = True 
 
+# --- TUYA SMART PLUG CONFIG (FILL THESE IN!) ---
+# Get these from iot.tuya.com
+TUYA_ACCESS_ID = qdqkmyefdpqav3ckvnxm
+TUYA_ACCESS_SECRET = c1b019580ece45a2902c9d0df19a8e02
+TUYA_DEVICE_ID = 364820008cce4e2efeda
+TUYA_ENDPOINT = "https://openapi.tuyaeu.com" # EU Data Center
+
 # 1. ELLEVIO (NETWORK)
-ELLEVIO_TRANSFER_FEE = 6.25    # öre/kWh
-ELLEVIO_PEAK_FEE_PER_KW = 81.25 # kr/kW
-ELLEVIO_MONTHLY_FIXED = 365.00  # kr/month
+ELLEVIO_TRANSFER_FEE = 6.25    
+ELLEVIO_PEAK_FEE_PER_KW = 81.25 
+ELLEVIO_MONTHLY_FIXED = 365.00  
 
 # 2. GOVERNMENT TAX
-ENERGY_TAX = 54.88 # öre/kWh
+ENERGY_TAX = 54.88 
 
 # 3. FORTUM (ELECTRICITY)
 FORTUM_MARKUP = 4.88  
@@ -37,7 +45,29 @@ def get_total_price(spot_ore):
     grid_part = (ELLEVIO_TRANSFER_FEE * 1.25) + ENERGY_TAX
     return fortum_part + grid_part
 
-@st.cache_data(ttl=900) # Reduced cache to 15 mins to keep "Current Line" accurate
+def get_tuya_power():
+    """Fetches real-time power (W) from the Smart Plug."""
+    if "YOUR_" in TUYA_ACCESS_ID: return 0.0 # User hasn't set keys yet
+    
+    try:
+        openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
+        openapi.connect()
+        # Fetch Device Status
+        response = openapi.get(f'/v1.0/devices/{TUYA_DEVICE_ID}/status')
+        
+        if response['success']:
+            for item in response['result']:
+                # Tuya plugs usually use 'cur_power' for Watts
+                # Value is often scaled by 10 (e.g. 2350 = 235.0 W)
+                if item['code'] == 'cur_power':
+                    raw_value = item['value']
+                    return raw_value / 10.0 # Convert to Watts
+        return 0.0
+    except Exception as e:
+        print(f"Tuya Error: {e}")
+        return 0.0
+
+@st.cache_data(ttl=900)
 def fetch_data():
     tz = pytz.timezone('Europe/Stockholm')
     today = datetime.now(tz)
@@ -76,13 +106,11 @@ def fetch_data():
             "Opacity": 1.0 if is_danger else 0.3
         })
     
-    # Return Data AND the current timestamp
     fetch_time = datetime.now(tz).strftime("%H:%M")
     return pd.DataFrame(rows), fetch_time
 
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
-# --- HEADER WITH REFRESH & TIME ---
 col1, col2 = st.columns([3, 1])
 with col1:
     st.title("⚡ Power Monitor")
@@ -90,6 +118,11 @@ with col2:
     if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.rerun()
+
+# --- FETCH LIVE PLUG DATA ---
+# We fetch this every time the page loads (no caching)
+live_plug_power_w = get_tuya_power()
+live_plug_power_kw = live_plug_power_w / 1000.0
 
 # --- PROPERTY SELECTOR ---
 selected_house = st.selectbox("Select Property", ["Main House", "Guest House"])
@@ -101,8 +134,6 @@ if df is None:
 else:
     tz = pytz.timezone('Europe/Stockholm')
     now = datetime.now(tz)
-    
-    # Show Last Updated Time
     st.caption(f"Last updated: {last_updated}")
 
     with st.expander("🧮 Calculators & Bill Estimator", expanded=False):
@@ -111,6 +142,11 @@ else:
         
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
+            
+            # SHOW LIVE PLUG DATA IF GUEST HOUSE
+            if selected_house == "Guest House" and live_plug_power_w > 0:
+                st.success(f"🔌 **LIVE Plug Usage:** {live_plug_power_w:.0f} W ({live_plug_power_kw:.2f} kW)")
+                
             appliance = st.selectbox("Machine", ["Heaters (PAX)", "Sauna (2h)", "Dishwasher (1.5h)", "Washing Machine (2h)"])
             
             if "Heaters" in appliance:
@@ -142,8 +178,12 @@ else:
 
             with col_b:
                 st.markdown("### 🏚️ Guest")
-                guest_kwh = st.number_input("kWh", value=517)
-                guest_peak = st.number_input("Peak (kW)", value=3.6)
+                guest_kwh = st.number_input("Guest kWh", value=517)
+                
+                # AUTO-FILL PEAK IF LIVE DATA IS HIGH
+                default_guest_peak = max(3.6, live_plug_power_kw) 
+                guest_peak = st.number_input("Peak (kW)", value=default_guest_peak)
+                
                 g_total = (guest_kwh * 1.00) + fortum_fixed_calc + \
                           (guest_kwh * ((ELLEVIO_TRANSFER_FEE*1.25)+ENERGY_TAX)/100) + \
                           (ELLEVIO_MONTHLY_FIXED + (guest_peak * ELLEVIO_PEAK_FEE_PER_KW))
@@ -171,7 +211,7 @@ else:
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
     
-    # 1. THE BAR CHART
+    # Chart with Orange Line
     bars = alt.Chart(chart_data).mark_bar().encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M')),
         y=alt.Y('Total Price'),
@@ -179,20 +219,12 @@ else:
         opacity=alt.Opacity('Opacity', scale=None),
         tooltip=['Time', 'Total Price']
     )
-    
-    # 2. THE 'YOU ARE HERE' LINE
-    # We create a single-row dataframe for the current time line
     now_line_data = pd.DataFrame({'Time': [now]})
-    rule = alt.Chart(now_line_data).mark_rule(color='orange', size=2).encode(
-        x='Time'
-    )
+    rule = alt.Chart(now_line_data).mark_rule(color='orange', size=2).encode(x='Time')
     
-    # Combine them
-    final_chart = (bars + rule).properties(height=300)
-    
-    st.altair_chart(final_chart, use_container_width=True)
+    st.altair_chart((bars + rule).properties(height=300), use_container_width=True)
 
-    # --- SIGNAL GUIDE ---
+    # Signal Guide
     st.markdown("### 🎨 Signal Guide")
     c1, c2, c3 = st.columns(3)
     with c1:
