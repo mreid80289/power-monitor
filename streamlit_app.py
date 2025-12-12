@@ -25,7 +25,10 @@ TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"
 TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
 TUYA_DEVICE_ID = "364820008cce4e2efeda"
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
+
 # PLUG SETTINGS
+# Based on your app (8.28) vs raw (828), factor is 100.0.
+# If raw is 10 and real is 1.0, factor is 10.0.
 PLUG_SCALING_FACTOR = 10.0 
 
 # FEES
@@ -47,7 +50,6 @@ def get_tuya_status():
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
         openapi.connect()
-        # Fetch STATUS (Live data)
         response = openapi.get(f'/v1.0/devices/{TUYA_DEVICE_ID}/status')
         if not response['success']: return None, response.get('msg', 'Error')
         return response['result'], None
@@ -112,14 +114,22 @@ plug_data, error_msg = get_tuya_status()
 
 live_power_w = 0.0
 total_kwh_accumulated = 0.0
+today_kwh_maybe = 0.0 # NEW: Hunting for daily usage
 
 if plug_data:
     for item in plug_data:
-        # We capture the standard ones, but look for more in the Inspector below
+        # 1. LIVE POWER
         if item['code'] in ['cur_power', 'power']:
             live_power_w = item['value'] / 10.0
+        
+        # 2. TOTAL LIFETIME ENERGY
         if item['code'] in ['add_ele', 'total_forward_energy', 'energy_total']:
-            total_kwh_accumulated = item['value'] 
+            total_kwh_accumulated = item['value']
+            
+        # 3. DAILY ENERGY (The Grail!)
+        # We look for common codes for "Today"
+        if item['code'] in ['day_ele', 'today_energy', 'cur_day', 'this_day_energy']:
+            today_kwh_maybe = item['value']
 
 live_power_kw = live_power_w / 1000.0
 
@@ -178,36 +188,44 @@ else:
                 cost_now = price_now * usage_kw * duration
 
                 if "Office Heater" in appliance:
-                    # 2. COST TODAY (ESTIMATE)
+                    st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
+                    st.divider()
+
+                    # 2. TOTAL ACTUAL COST (The Trustworthy Number)
+                    st.markdown(f"### 📊 Actual Recorded Cost")
+                    if total_kwh_accumulated > 0:
+                         total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
+                         
+                         # If we found a "Today" counter, show that!
+                         if today_kwh_maybe > 0:
+                             today_real = today_kwh_maybe / PLUG_SCALING_FACTOR
+                             cost_today_real = today_real * (price_now) # approx using current price or avg
+                             st.write(f"Today: **{cost_today_real:.2f} kr** ({today_real} kWh)")
+                         
+                         total_cost_real = total_kwh_real * avg_price_total 
+                         st.write(f"Lifetime Total: **{total_cost_real:.2f} kr**")
+                         st.caption(f"Based on Plug Counter: {total_kwh_real:.2f} kWh")
+                    else:
+                        st.caption("Waiting for data...")
+
+                    # 3. PROJECTION (The Estimate)
+                    st.markdown(f"### 🔮 Projection (If Continuous)")
+                    # Fixed Math: Avg Price for Work Hours * 13.5 Hours * Current KW
                     today_rows = df[df['Time'].dt.date == now.date()]
                     work_rows = today_rows[(today_rows['Hour'] >= 5) & (today_rows['Hour'] < 19)]
-                    
                     if not work_rows.empty:
                         avg_work_price = work_rows['Total Price'].mean() / 100
                         work_day_cost = avg_work_price * usage_kw * 13.5
-                    else:
-                        work_day_cost = 0.0
-
-                    st.write(f"Run **NOW**: **{cost_now:.2f} kr** (per hour)")
+                    else: work_day_cost = 0.0
                     
-                    st.markdown(f"### 🗓️ Cost Today (05:30–19:00)")
-                    st.write(f"**{work_day_cost:.2f} kr** (Est)")
-                    st.caption("Estimate based on current running speed.")
+                    st.write(f"Cost Today (05:30–19:00): **{work_day_cost:.2f} kr**")
+                    st.caption("⚠️ Estimate assumes heater NEVER turns off.")
 
-                    st.markdown(f"### 📅 Total Lifetime Cost")
-                    if total_kwh_accumulated > 0:
-                         total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
-                         estimated_cost_accum = total_kwh_real * avg_price_total 
-                         st.write(f"**{estimated_cost_accum:.2f} kr**")
-                         st.caption(f"Based on Plug Total: {total_kwh_real:.2f} kWh")
-                    else:
-                        st.caption("Plug not reporting total history.")
                 else:
                     st.write(f"Run **NOW**: **{cost_now:.2f} kr** ({label})")
 
         with tab2:
             st.subheader("🔮 Invoice Predictor")
-            # (Keeping it brief, logic remains same as v29)
             has_priskollen = st.checkbox("Include 'Priskollen' Fee (49kr)?", value=True)
             fortum_fixed = FORTUM_BASE_FEE + (FORTUM_PRISKOLLEN if has_priskollen else 0)
             
@@ -255,9 +273,9 @@ else:
 
     # --- PLUG INSPECTOR (DEBUG) ---
     st.divider()
-    with st.expander("🕵️ Plug Inspector (Look here!)", expanded=False):
-        st.write("Does your plug allow us to see 'Today's Usage'? Check this list:")
+    with st.expander("🕵️ Plug Inspector (Check this for 'Today's Usage')", expanded=False):
         if plug_data:
+            st.write("Look for a code like 'day_ele' or 'cur_day' with a value like 30 or 50.")
             st.json(plug_data)
         else:
             st.warning("No data found. Check connections.")
