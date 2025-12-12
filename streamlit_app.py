@@ -4,7 +4,7 @@ import pandas as pd
 import altair as alt
 from datetime import datetime, timedelta
 import pytz
-from tuya_connector import TuyaOpenAPI # NEW LIBRARY
+from tuya_connector import TuyaOpenAPI
 
 # --- HIDE STREAMLIT STYLE ---
 hide_st_style = """
@@ -16,26 +16,21 @@ hide_st_style = """
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# --- CONFIGURATION (VERIFIED OCT 2025 BILLS) ---
+# --- CONFIGURATION ---
 REGION = "SE3"
 IS_VILLA = True 
 
-# --- TUYA SMART PLUG CONFIG (FILL THESE IN!) ---
-# Get these from iot.tuya.com
-TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"
-TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"
-TUYA_DEVICE_ID = "364820008cce4e2efeda"
-TUYA_ENDPOINT = "https://openapi.tuyaeu.com" # EU Data Center
+# --- TUYA SMART PLUG CONFIG ---
+TUYA_ACCESS_ID = "YOUR_ACCESS_ID_HERE"      
+TUYA_ACCESS_SECRET = "YOUR_ACCESS_SECRET_HERE"     
+TUYA_DEVICE_ID = "YOUR_DEVICE_ID_HERE"
+TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
-# 1. ELLEVIO (NETWORK)
+# ELLEVIO & FORTUM FEES (Same as before)
 ELLEVIO_TRANSFER_FEE = 6.25    
 ELLEVIO_PEAK_FEE_PER_KW = 81.25 
 ELLEVIO_MONTHLY_FIXED = 365.00  
-
-# 2. GOVERNMENT TAX
 ENERGY_TAX = 54.88 
-
-# 3. FORTUM (ELECTRICITY)
 FORTUM_MARKUP = 4.88  
 FORTUM_BASE_FEE = 69.00
 FORTUM_PRISKOLLEN = 49.00
@@ -46,26 +41,31 @@ def get_total_price(spot_ore):
     return fortum_part + grid_part
 
 def get_tuya_power():
-    """Fetches real-time power (W) from the Smart Plug."""
-    if "YOUR_" in TUYA_ACCESS_ID: return 0.0 # User hasn't set keys yet
+    """Fetches real-time power (W) with DEBUGGING enabled."""
+    # Check if keys are generic placeholders
+    if "YOUR_" in TUYA_ACCESS_ID: 
+        return 0.0, "Keys not set."
     
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
         openapi.connect()
-        # Fetch Device Status
         response = openapi.get(f'/v1.0/devices/{TUYA_DEVICE_ID}/status')
         
-        if response['success']:
-            for item in response['result']:
-                # Tuya plugs usually use 'cur_power' for Watts
-                # Value is often scaled by 10 (e.g. 2350 = 235.0 W)
-                if item['code'] == 'cur_power':
-                    raw_value = item['value']
-                    return raw_value / 10.0 # Convert to Watts
-        return 0.0
+        # DEBUG: Print the raw response to the app so we can see what happened
+        if not response['success']:
+            return 0.0, f"Tuya Error: {response.get('msg', 'Unknown Error')}"
+        
+        for item in response['result']:
+            # Check for BOTH standard naming conventions
+            if item['code'] in ['cur_power', 'power']:
+                raw_value = item['value']
+                # Tuya usually sends integer (2350 = 235.0 W). Divide by 10.
+                return (raw_value / 10.0), None 
+        
+        return 0.0, "Connected, but no 'Power' reading found on device."
+        
     except Exception as e:
-        print(f"Tuya Error: {e}")
-        return 0.0
+        return 0.0, f"Script Error: {str(e)}"
 
 @st.cache_data(ttl=900)
 def fetch_data():
@@ -92,7 +92,6 @@ def fetch_data():
         spot_ore = hour['SEK_per_kWh'] * 100
         total_ore = get_total_price(spot_ore)
         
-        # Danger Zone: Weekdays 07-20
         is_weekday = start.weekday() < 5
         is_peak_hour = 7 <= start.hour < 20
         is_danger = is_weekday and is_peak_hour
@@ -119,9 +118,8 @@ with col2:
         st.cache_data.clear()
         st.rerun()
 
-# --- FETCH LIVE PLUG DATA ---
-# We fetch this every time the page loads (no caching)
-live_plug_power_w = get_tuya_power()
+# --- FETCH LIVE PLUG DATA (WITH DEBUG) ---
+live_plug_power_w, error_msg = get_tuya_power()
 live_plug_power_kw = live_plug_power_w / 1000.0
 
 # --- PROPERTY SELECTOR ---
@@ -136,17 +134,22 @@ else:
     now = datetime.now(tz)
     st.caption(f"Last updated: {last_updated}")
 
-    with st.expander("🧮 Calculators & Bill Estimator", expanded=False):
+    with st.expander("🧮 Calculators & Bill Estimator", expanded=True): # Expanded by default to see debug
         
         tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
         
         with tab1:
             st.info(f"Analysis for: **{selected_house}**")
             
-            # SHOW LIVE PLUG DATA IF GUEST HOUSE
-            if selected_house == "Guest House" and live_plug_power_w > 0:
-                st.success(f"🔌 **LIVE Plug Usage:** {live_plug_power_w:.0f} W ({live_plug_power_kw:.2f} kW)")
-                
+            # --- DEBUG SECTION ---
+            # If we have a reading, show it green
+            if live_plug_power_w > 0:
+                st.success(f"🔌 **LIVE Plug Usage:** {live_plug_power_w:.1f} W ({live_plug_power_kw:.3f} kW)")
+            # If we have an error, show it red (ONLY in Guest House mode to avoid clutter)
+            elif error_msg and selected_house == "Guest House":
+                 st.error(f"⚠️ Plug Connection Failed: {error_msg}")
+                 st.caption("Check your Keys and Endpoint in the script.")
+            
             appliance = st.selectbox("Machine", ["Heaters (PAX)", "Sauna (2h)", "Dishwasher (1.5h)", "Washing Machine (2h)"])
             
             if "Heaters" in appliance:
@@ -180,8 +183,8 @@ else:
                 st.markdown("### 🏚️ Guest")
                 guest_kwh = st.number_input("Guest kWh", value=517)
                 
-                # AUTO-FILL PEAK IF LIVE DATA IS HIGH
-                default_guest_peak = max(3.6, live_plug_power_kw) 
+                # Auto-fill peak if live data is high
+                default_guest_peak = max(3.6, live_plug_power_kw)
                 guest_peak = st.number_input("Peak (kW)", value=default_guest_peak)
                 
                 g_total = (guest_kwh * 1.00) + fortum_fixed_calc + \
@@ -211,7 +214,6 @@ else:
     start_view = now - timedelta(hours=2)
     chart_data = df[df['Time'] >= start_view]
     
-    # Chart with Orange Line
     bars = alt.Chart(chart_data).mark_bar().encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M')),
         y=alt.Y('Total Price'),
@@ -224,7 +226,6 @@ else:
     
     st.altair_chart((bars + rule).properties(height=300), use_container_width=True)
 
-    # Signal Guide
     st.markdown("### 🎨 Signal Guide")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -236,4 +237,3 @@ else:
     with c3:
         st.error("🔴 **EXPENSIVE**")
         st.caption("> 2.00 SEK")
-
