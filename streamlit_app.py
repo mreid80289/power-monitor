@@ -19,27 +19,16 @@ st.markdown("""
     
     /* Modern Card Styling (Dark Glass) */
     div[data-testid="stMetric"], div[data-testid="stExpander"] {
-        background-color: #262730;
-        border: 1px solid #41424C;
-        border-radius: 12px;
-        padding: 15px;
+        background-color: #1E1E24;
+        border: 1px solid #31333F;
+        border-radius: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        transition: transform 0.2s;
     }
     
-    div[data-testid="stMetric"]:hover {
-        border-color: #00E676; /* Neon Green Glow on Hover */
-    }
-
     /* Text Colors */
     h1, h2, h3, p, div, span, label {
         color: #FAFAFA !important;
         font-family: 'Segoe UI', sans-serif;
-    }
-    
-    /* Neon Accents for Metrics */
-    div[data-testid="stMetricValue"] {
-        font-weight: 700; 
     }
     
     /* Buttons */
@@ -48,11 +37,15 @@ st.markdown("""
         color: white;
         border: 1px solid #41424C;
         border-radius: 8px;
-        height: 3em;
     }
     div.stButton > button:hover {
         border-color: #00E676;
         color: #00E676;
+    }
+    
+    /* Tab Styling */
+    button[data-baseweb="tab"] {
+        background-color: transparent !important;
     }
     
     /* Hide Header/Footer */
@@ -80,28 +73,18 @@ TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"
 TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
 
-# Dictionary to handle multiple properties
 HOUSES = {
-    "Guest House": {
-        "plug_id": "364820008cce4e2efeda",
-        "heater_id": "bf070e912f4a1df81dakvu",
-        "has_smart_devices": True
-    },
-    "Main House": {
-        "plug_id": "", 
-        "heater_id": "",
-        "has_smart_devices": False 
-    }
+    "Main House": {"has_smart_devices": False, "plug_id": "", "heater_id": ""},
+    "Guest House": {"has_smart_devices": True, "plug_id": "364820008cce4e2efeda", "heater_id": "bf070e912f4a1df81dakvu"}
 }
 
-# --- EXACT FEE CALIBRATION (VERIFIED) ---
+# --- EXACT FEE CALIBRATION ---
 GRID_TOTAL_INC_VAT = 61.13  
 FORTUM_ADDONS_EX_VAT = 15.57 
 
 def get_total_price_per_kwh(spot_price_ore_ex_vat):
     electricity_part_inc_vat = (spot_price_ore_ex_vat + FORTUM_ADDONS_EX_VAT) * 1.25
-    total_price = electricity_part_inc_vat + GRID_TOTAL_INC_VAT
-    return total_price
+    return electricity_part_inc_vat + GRID_TOTAL_INC_VAT
 
 # --- TUYA CONNECT ---
 def get_tuya_status(device_id):
@@ -146,10 +129,10 @@ def fetch_hourly_prices():
         spot_ore = hour['SEK_per_kWh'] * 100 
         total_ore = get_total_price_per_kwh(spot_ore)
         
-        # VISIBILITY COLORS (Neon Traffic Light)
-        if total_ore < 100: color = "#00E676"   # Neon Green (Cheap)
-        elif total_ore < 200: color = "#FFEA00" # Bright Yellow (Caution)
-        else: color = "#FF1744"                 # Neon Red (Expensive)
+        # NEON TRAFFIC LIGHT COLORS
+        if total_ore < 100: color = "#00E676"   # Neon Green
+        elif total_ore < 200: color = "#FFEA00" # Yellow
+        else: color = "#FF1744"                 # Red
 
         rows.append({
             "Time": start, 
@@ -163,24 +146,19 @@ def fetch_hourly_prices():
     df.drop_duplicates(subset=['Time'], inplace=True)
     return df, datetime.now(tz)
 
-# --- MAIN DASHBOARD UI ---
-st.title("⚡ Power Command")
+# --- MAIN APP LAYOUT ---
+st.title("⚡ Power Monitor")
 
 # 1. PROPERTY SELECTOR
 selected_house_name = st.selectbox("Select Property", list(HOUSES.keys()))
 current_house_config = HOUSES[selected_house_name]
 
-# 2. Fetch Data
-if current_house_config["has_smart_devices"]:
-    plug_status = get_tuya_status(current_house_config["plug_id"])
-    heater_status = get_tuya_status(current_house_config["heater_id"])
-else:
-    plug_status = None
-    heater_status = None
-
+# 2. FETCH DATA
 df, last_updated = fetch_hourly_prices()
+plug_status = get_tuya_status(current_house_config["plug_id"]) if current_house_config["has_smart_devices"] else None
+heater_status = get_tuya_status(current_house_config["heater_id"]) if current_house_config["has_smart_devices"] else None
 
-# 3. Parse Devices
+# Parse Smart Devices
 live_power_w = 0.0
 if plug_status:
     for i in plug_status:
@@ -193,43 +171,84 @@ if heater_status:
         if i['code'] == 'temp_set': target_temp = i['value']
         if i['code'] == 'switch': heater_on = i['value']
 
-# 4. TOP SECTION: KEY METRICS
+# Current Price Logic
 tz = pytz.timezone('Europe/Stockholm')
 now = datetime.now(tz)
 current_price_ore = 0.0
+spot_now = 0.0
 
 if df is not None:
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
     if not current_row.empty:
         current_price_ore = current_row.iloc[0]['Total Price']
+        spot_now = current_row.iloc[0]['Spot Price']
 
-    # GRID LAYOUT FOR METRICS
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric(
-            label="💰 LIVE PRICE", 
-            value=f"{current_price_ore:.0f} öre",
-            delta="Exact Rate (Inc. Fees)",
-            delta_color="off"
-        )
-    with c2:
-        if current_house_config["has_smart_devices"]:
-            cost_now = (live_power_w / 1000.0) * (current_price_ore / 100.0)
-            st.metric(
-                label="⚡ LIVE CONSUMPTION", 
-                value=f"{live_power_w:.0f} W",
-                delta=f"{cost_now:.2f} kr / hour",
-                delta_color="inverse"
-            )
-        else:
-            st.metric(label="⚡ LIVE CONSUMPTION", value="-- W", delta="No Sensor Linked", delta_color="off")
-
-    # CHART SECTION
+# --- SECTION 1: CALCULATORS & CONTROLS (THE FEATURE YOU MISSED) ---
+# If Guest House, we show the SMART CONTROL first, but inside the same visual flow
+if current_house_config["has_smart_devices"]:
+    st.markdown("### 🔥 Climate Control")
+    # Smart Status Box
+    with st.container():
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Indoors", f"{current_temp}°")
+        c2.metric("Target", f"{target_temp}°")
+        c3.metric("State", "ON" if heater_on else "OFF", f"{live_power_w:.0f} W")
+        
+        # Controls
+        b1, b2, b3 = st.columns([1, 1, 2])
+        with b1: 
+            if st.button("❄️ -1°"):
+                send_tuya_command(current_house_config["heater_id"], 'temp_set', target_temp - 1); st.rerun()
+        with b2:
+            if st.button("🔥 +1°"):
+                send_tuya_command(current_house_config["heater_id"], 'temp_set', target_temp + 1); st.rerun()
+        with b3:
+            if st.button("⛔ STOP" if heater_on else "🚀 START", type="primary" if not heater_on else "secondary", use_container_width=True):
+                send_tuya_command(current_house_config["heater_id"], 'switch', not heater_on); st.rerun()
     st.markdown("---")
-    st.caption(f"Price Forecast (Next 24h) • Current: {now.strftime('%H:%M')}")
+
+# THE CALCULATOR EXPANDER (RESTORED EXACTLY)
+with st.expander("🧮 Calculators & Bill Estimator", expanded=True):
+    tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
     
+    with tab1:
+        st.info(f"Analysis for: **{selected_house_name}**")
+        
+        # List of appliances
+        apps = {
+            "Heaters (Standard)": 1000,
+            "Washing Machine": 2000,
+            "Dryer": 2500,
+            "Oven": 3000,
+            "Sauna": 6000,
+            "PC / TV": 200
+        }
+        
+        # Dropdown
+        app_choice = st.selectbox("Machine", list(apps.keys()))
+        wattage = apps[app_choice]
+        
+        # Slider
+        count = st.slider("Duration (Hours)", 1, 10, 1)
+        
+        # Calculation
+        cost_now = (wattage / 1000.0) * count * (current_price_ore / 100.0)
+        st.markdown(f"### Run NOW: :green[{cost_now:.2f} kr]")
+
+    with tab2:
+        st.write("Invoice estimation coming soon based on historic data.")
+
+# --- SECTION 2: BIG PRICE DISPLAY ---
+st.markdown("---")
+# Use columns to get the "Spot | Grid" text next to the big number if desired, or below.
+st.metric(label="Total Price", value=f"{current_price_ore:.2f} öre")
+st.caption(f"Spot: {spot_now:.2f} | Grid: {GRID_TOTAL_INC_VAT:.2f}")
+
+# --- SECTION 3: GRAPH (NEON GREEN) ---
+st.subheader("Price Forecast (24h)")
+if df is not None:
     # Active Bar Highlighting
-    df['Opacity'] = df['Time'].apply(lambda x: 1.0 if x.hour == now.hour and x.date() == now.date() else 0.3)
+    df['Opacity'] = df['Time'].apply(lambda x: 1.0 if x.hour == now.hour and x.date() == now.date() else 0.4)
     
     chart = alt.Chart(df[df['Time'] >= now - timedelta(hours=2)]).mark_bar(cornerRadius=4).encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M', title=None, domain=False, tickSize=0, labelColor='#888')),
@@ -237,16 +256,18 @@ if df is not None:
         color=alt.Color('Color', scale=None),
         opacity=alt.Opacity('Opacity', legend=None),
         tooltip=['Time', 'Total Price']
-    ).properties(height=200).configure_view(strokeWidth=0).configure_axis(grid=False)
+    ).properties(height=250).configure_view(strokeWidth=0).configure_axis(grid=False)
     
     st.altair_chart(chart, use_container_width=True)
 
-# 5. HEATER CONTROL SECTION
-if current_house_config["has_smart_devices"]:
-    st.markdown("### 🔥 Climate Control")
-    if heater_status:
-        # Status Row
-        c_temp, c_targ, c_stat = st.columns(3)
-        with c_temp: st.metric("Indoors", f"{current_temp}°")
-        with c_targ: st.metric("Target", f"{target_temp}°")
-        with c_
+# --- SECTION 4: SIGNAL GUIDE (RESTORED) ---
+st.subheader("🎨 Signal Guide")
+c1, c2, c3 = st.columns(3)
+with c1: st.success("🟢 SAFE\n\nNight / Wknd")
+with c2: st.warning("🟡 CAUTION\n\nDay 07-20")
+with c3: st.error("🔴 EXPENSIVE\n\n> 2.00 SEK")
+
+# Footer Sync
+if st.button("🔄 Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
