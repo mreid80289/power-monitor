@@ -6,42 +6,56 @@ from datetime import datetime, timedelta
 import pytz
 from tuya_connector import TuyaOpenAPI
 
-# --- 1. PAGE CONFIG & MODERN STYLING ---
+# --- 1. PAGE CONFIG & DARK MODERN CSS ---
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
-# Custom CSS for "Modern Nordic" Look
+# Custom CSS for "Cyberpunk/Modern Dark" Look
 st.markdown("""
     <style>
-    /* Main Background */
+    /* Force Dark Background */
     .stApp {
-        background-color: #FAFCFF;
+        background-color: #0E1117;
     }
     
-    /* Card Styling for Metrics */
-    div[data-testid="stMetric"] {
-        background-color: #F0F8FF; /* AliceBlue */
-        border: 1px solid #E1EAF5;
+    /* Modern Card Styling (Dark Glass) */
+    div[data-testid="stMetric"], div[data-testid="stExpander"] {
+        background-color: #262730;
+        border: 1px solid #41424C;
         border-radius: 12px;
         padding: 15px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        transition: transform 0.2s;
     }
     
-    /* Headlines */
-    h1, h2, h3 {
-        color: #2c3e50;
-        font-family: 'Helvetica Neue', sans-serif;
-        font-weight: 600;
+    div[data-testid="stMetric"]:hover {
+        border-color: #4DD0E1; /* Neon Cyan Glow on Hover */
+    }
+
+    /* Text Colors */
+    h1, h2, h3, p, div, span {
+        color: #FAFAFA !important;
+        font-family: 'Segoe UI', sans-serif;
+    }
+    
+    /* Neon Accents for Metrics */
+    div[data-testid="stMetricValue"] {
+        font-weight: 700; 
     }
     
     /* Buttons */
     div.stButton > button {
+        background-color: #262730;
+        color: white;
+        border: 1px solid #41424C;
         border-radius: 8px;
-        font-weight: 500;
-        border: none;
-        transition: all 0.3s;
+        height: 3em;
+    }
+    div.stButton > button:hover {
+        border-color: #00E5FF;
+        color: #00E5FF;
     }
     
-    /* Hide Default Header/Footer */
+    /* Hide Header/Footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -119,11 +133,10 @@ def fetch_hourly_prices():
         spot_ore = hour['SEK_per_kWh'] * 100 
         total_ore = get_total_price_per_kwh(spot_ore)
         
-        # Modern Color Logic (Granular Blues/Teals)
-        # Safe (Teal) -> Caution (Blue/Grey) -> Expensive (Muted Red)
-        if total_ore < 100: color = "#4DD0E1"  # Cyan/Teal (Safe)
-        elif total_ore < 200: color = "#90A4AE" # Blue Grey (Normal)
-        else: color = "#E57373" # Soft Red (Expensive)
+        # Neon Chart Colors
+        if total_ore < 100: color = "#00E5FF"   # Neon Cyan (Cheap)
+        elif total_ore < 200: color = "#76818E" # Grey/Blue (Normal)
+        else: color = "#FF5252"                 # Neon Red (Expensive)
 
         rows.append({
             "Time": start, 
@@ -138,7 +151,7 @@ def fetch_hourly_prices():
     return df, datetime.now(tz)
 
 # --- MAIN DASHBOARD UI ---
-st.title("⚡ Guest House Energy")
+st.title("⚡ Power Command")
 
 # 1. Fetch Data
 plug_status = get_tuya_status(TUYA_PLUG_ID)
@@ -158,7 +171,7 @@ if heater_status:
         if i['code'] == 'temp_set': target_temp = i['value']
         if i['code'] == 'switch': heater_on = i['value']
 
-# 3. TOP SECTION: PRICE CARD
+# 3. TOP SECTION: KEY METRICS
 tz = pytz.timezone('Europe/Stockholm')
 now = datetime.now(tz)
 current_price_ore = 0.0
@@ -167,76 +180,78 @@ if df is not None:
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
     if not current_row.empty:
         current_price_ore = current_row.iloc[0]['Total Price']
-        
-        # Hero Metric
-        col_hero, col_btn = st.columns([2, 1])
-        with col_hero:
-            st.metric(
-                label=f"Current Rate ({now.strftime('%H:%M')})", 
-                value=f"{current_price_ore:.2f} öre",
-                delta="Live Kvartspris",
-                delta_color="off"
-            )
-        with col_btn:
-             if st.button("🔄 Sync", type="secondary", use_container_width=True):
-                 st.cache_data.clear()
-                 st.rerun()
 
-    # Modern Chart
-    st.caption("Upcoming Prices (24h)")
-    # Highlight Active Hour
-    df['Opacity'] = df['Time'].apply(lambda x: 1.0 if x.hour == now.hour and x.date() == now.date() else 0.5)
+    # GRID LAYOUT FOR METRICS
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric(
+            label="💰 LIVE PRICE", 
+            value=f"{current_price_ore:.0f} öre",
+            delta="Exact Rate (Inc. Fees)",
+            delta_color="off"
+        )
+    with c2:
+        # Calculate real-time cost
+        cost_now = (live_power_w / 1000.0) * (current_price_ore / 100.0)
+        st.metric(
+            label="⚡ LIVE CONSUMPTION", 
+            value=f"{live_power_w:.0f} W",
+            delta=f"{cost_now:.2f} kr / hour",
+            delta_color="inverse"
+        )
+
+    # CHART SECTION
+    st.markdown("---")
+    st.caption(f"Price Forecast (Next 24h) • Current: {now.strftime('%H:%M')}")
     
-    chart = alt.Chart(df[df['Time'] >= now - timedelta(hours=2)]).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-        x=alt.X('Time', axis=alt.Axis(format='%H:%M', title=None, grid=False)),
-        y=alt.Y('Total Price', axis=alt.Axis(title=None, grid=False)),
+    # Active Bar Highlighting
+    df['Opacity'] = df['Time'].apply(lambda x: 1.0 if x.hour == now.hour and x.date() == now.date() else 0.3)
+    
+    chart = alt.Chart(df[df['Time'] >= now - timedelta(hours=2)]).mark_bar(cornerRadius=4).encode(
+        x=alt.X('Time', axis=alt.Axis(format='%H:%M', title=None, domain=False, tickSize=0, labelColor='#888')),
+        y=alt.Y('Total Price', axis=alt.Axis(title=None, domain=False, tickSize=0, labelColor='#888')),
         color=alt.Color('Color', scale=None),
         opacity=alt.Opacity('Opacity', legend=None),
         tooltip=['Time', 'Total Price']
-    ).properties(height=180).configure_view(strokeWidth=0)
+    ).properties(height=200).configure_view(strokeWidth=0).configure_axis(grid=False)
+    
     st.altair_chart(chart, use_container_width=True)
 
-# 4. CONTROL SECTION
-st.markdown("### 🌡️ Climate Control")
+# 4. HEATER CONTROL SECTION
+st.markdown("### 🔥 Climate Control")
 
-# Status Cards
-c1, c2, c3 = st.columns(3)
-with c1: st.metric("Indoors", f"{current_temp} °C")
-with c2: st.metric("Target", f"{target_temp} °C")
-with c3: 
-    state_text = "Active" if heater_on else "Standby"
-    st.metric("State", state_text)
+if heater_status:
+    # Status Row
+    c_temp, c_targ, c_stat = st.columns(3)
+    with c_temp: st.metric("Indoors", f"{current_temp}°")
+    with c_targ: st.metric("Target", f"{target_temp}°")
+    with c_stat: 
+        status_color = "🟢" if heater_on else "⚫"
+        st.metric("State", f"{status_color} {'ON' if heater_on else 'OFF'}")
 
-# Cost Calculation
-cost_per_hour_kr = (live_power_w / 1000.0) * (current_price_ore / 100.0)
+    # Control Row (Big Buttons)
+    st.write("") # Spacer
+    b1, b2, b3 = st.columns([1, 1, 2])
+    with b1:
+        if st.button("❄️ -1°", use_container_width=True):
+            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp - 1)
+            st.rerun()
+    with b2:
+        if st.button("🔥 +1°", use_container_width=True):
+            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp + 1)
+            st.rerun()
+    with b3:
+        # Toggle Logic
+        btn_text = "⛔ STOP HEATING" if heater_on else "🚀 START HEATING"
+        if st.button(btn_text, type="primary", use_container_width=True):
+            send_tuya_command(TUYA_HEATER_ID, 'switch', not heater_on)
+            st.rerun()
+            
+else:
+    st.warning("⚠️ Heater Offline")
 
-# Main Action Area
-with st.container():
-    if heater_status:
-        # Dynamic Feedback Line
-        if live_power_w > 10:
-            st.success(f"🔥 Heating is running at **{live_power_w:.0f} W** (~{cost_per_hour_kr:.2f} kr/h)")
-        elif heater_on:
-            st.info("💤 Heater is ON but idle (Target reached)")
-        else:
-            st.write("🌑 Heater is OFF")
-
-        # Big Buttons
-        b1, b2, b3 = st.columns([1, 1, 2])
-        with b1:
-            if st.button("❄️ -1°", use_container_width=True):
-                send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp - 1)
-                st.rerun()
-        with b2:
-            if st.button("🔥 +1°", use_container_width=True):
-                send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp + 1)
-                st.rerun()
-        with b3:
-            # Toggle Button Logic
-            btn_label = "Stop Heating" if heater_on else "Start Heating"
-            btn_type = "primary" if not heater_on else "secondary"
-            if st.button(btn_label, type=btn_type, use_container_width=True):
-                send_tuya_command(TUYA_HEATER_ID, 'switch', not heater_on)
-                st.rerun()
-    else:
-        st.error("⚠️ Device Offline")
+# 5. Footer / Sync
+st.markdown("---")
+if st.button("🔄 Force Refresh Data", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
