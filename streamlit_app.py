@@ -28,11 +28,11 @@ st.markdown("""
     }
     
     div[data-testid="stMetric"]:hover {
-        border-color: #4DD0E1; /* Neon Cyan Glow on Hover */
+        border-color: #00E676; /* Neon Green Glow on Hover */
     }
 
     /* Text Colors */
-    h1, h2, h3, p, div, span {
+    h1, h2, h3, p, div, span, label {
         color: #FAFAFA !important;
         font-family: 'Segoe UI', sans-serif;
     }
@@ -51,8 +51,8 @@ st.markdown("""
         height: 3em;
     }
     div.stButton > button:hover {
-        border-color: #00E5FF;
-        color: #00E5FF;
+        border-color: #00E676;
+        color: #00E676;
     }
     
     /* Hide Header/Footer */
@@ -74,13 +74,25 @@ def check_password():
 
 if not check_password(): st.stop()
 
-# --- 3. CONFIG & KEYS ---
+# --- 3. CONFIG & HOUSE SETUP ---
 REGION = "SE3"
 TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
 TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
-TUYA_PLUG_ID = "364820008cce4e2efeda"       
-TUYA_HEATER_ID = "bf070e912f4a1df81dakvu"   
+
+# Dictionary to handle multiple properties
+HOUSES = {
+    "Guest House": {
+        "plug_id": "364820008cce4e2efeda",
+        "heater_id": "bf070e912f4a1df81dakvu",
+        "has_smart_devices": True
+    },
+    "Main House": {
+        "plug_id": "", 
+        "heater_id": "",
+        "has_smart_devices": False 
+    }
+}
 
 # --- EXACT FEE CALIBRATION (VERIFIED) ---
 GRID_TOTAL_INC_VAT = 61.13  
@@ -93,6 +105,7 @@ def get_total_price_per_kwh(spot_price_ore_ex_vat):
 
 # --- TUYA CONNECT ---
 def get_tuya_status(device_id):
+    if not device_id: return None
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
         openapi.connect()
@@ -133,10 +146,10 @@ def fetch_hourly_prices():
         spot_ore = hour['SEK_per_kWh'] * 100 
         total_ore = get_total_price_per_kwh(spot_ore)
         
-        # Neon Chart Colors
-        if total_ore < 100: color = "#00E5FF"   # Neon Cyan (Cheap)
-        elif total_ore < 200: color = "#76818E" # Grey/Blue (Normal)
-        else: color = "#FF5252"                 # Neon Red (Expensive)
+        # VISIBILITY COLORS (Neon Traffic Light)
+        if total_ore < 100: color = "#00E676"   # Neon Green (Cheap)
+        elif total_ore < 200: color = "#FFEA00" # Bright Yellow (Caution)
+        else: color = "#FF1744"                 # Neon Red (Expensive)
 
         rows.append({
             "Time": start, 
@@ -153,12 +166,21 @@ def fetch_hourly_prices():
 # --- MAIN DASHBOARD UI ---
 st.title("⚡ Power Command")
 
-# 1. Fetch Data
-plug_status = get_tuya_status(TUYA_PLUG_ID)
-heater_status = get_tuya_status(TUYA_HEATER_ID)
+# 1. PROPERTY SELECTOR
+selected_house_name = st.selectbox("Select Property", list(HOUSES.keys()))
+current_house_config = HOUSES[selected_house_name]
+
+# 2. Fetch Data
+if current_house_config["has_smart_devices"]:
+    plug_status = get_tuya_status(current_house_config["plug_id"])
+    heater_status = get_tuya_status(current_house_config["heater_id"])
+else:
+    plug_status = None
+    heater_status = None
+
 df, last_updated = fetch_hourly_prices()
 
-# 2. Parse Devices
+# 3. Parse Devices
 live_power_w = 0.0
 if plug_status:
     for i in plug_status:
@@ -171,7 +193,7 @@ if heater_status:
         if i['code'] == 'temp_set': target_temp = i['value']
         if i['code'] == 'switch': heater_on = i['value']
 
-# 3. TOP SECTION: KEY METRICS
+# 4. TOP SECTION: KEY METRICS
 tz = pytz.timezone('Europe/Stockholm')
 now = datetime.now(tz)
 current_price_ore = 0.0
@@ -191,14 +213,16 @@ if df is not None:
             delta_color="off"
         )
     with c2:
-        # Calculate real-time cost
-        cost_now = (live_power_w / 1000.0) * (current_price_ore / 100.0)
-        st.metric(
-            label="⚡ LIVE CONSUMPTION", 
-            value=f"{live_power_w:.0f} W",
-            delta=f"{cost_now:.2f} kr / hour",
-            delta_color="inverse"
-        )
+        if current_house_config["has_smart_devices"]:
+            cost_now = (live_power_w / 1000.0) * (current_price_ore / 100.0)
+            st.metric(
+                label="⚡ LIVE CONSUMPTION", 
+                value=f"{live_power_w:.0f} W",
+                delta=f"{cost_now:.2f} kr / hour",
+                delta_color="inverse"
+            )
+        else:
+            st.metric(label="⚡ LIVE CONSUMPTION", value="-- W", delta="No Sensor Linked", delta_color="off")
 
     # CHART SECTION
     st.markdown("---")
@@ -217,40 +241,42 @@ if df is not None:
     
     st.altair_chart(chart, use_container_width=True)
 
-# 4. HEATER CONTROL SECTION
+# 5. HEATER CONTROL SECTION
 st.markdown("### 🔥 Climate Control")
 
-if heater_status:
-    # Status Row
-    c_temp, c_targ, c_stat = st.columns(3)
-    with c_temp: st.metric("Indoors", f"{current_temp}°")
-    with c_targ: st.metric("Target", f"{target_temp}°")
-    with c_stat: 
-        status_color = "🟢" if heater_on else "⚫"
-        st.metric("State", f"{status_color} {'ON' if heater_on else 'OFF'}")
+if current_house_config["has_smart_devices"]:
+    if heater_status:
+        # Status Row
+        c_temp, c_targ, c_stat = st.columns(3)
+        with c_temp: st.metric("Indoors", f"{current_temp}°")
+        with c_targ: st.metric("Target", f"{target_temp}°")
+        with c_stat: 
+            status_color = "🟢" if heater_on else "⚫"
+            st.metric("State", f"{status_color} {'ON' if heater_on else 'OFF'}")
 
-    # Control Row (Big Buttons)
-    st.write("") # Spacer
-    b1, b2, b3 = st.columns([1, 1, 2])
-    with b1:
-        if st.button("❄️ -1°", use_container_width=True):
-            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp - 1)
-            st.rerun()
-    with b2:
-        if st.button("🔥 +1°", use_container_width=True):
-            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp + 1)
-            st.rerun()
-    with b3:
-        # Toggle Logic
-        btn_text = "⛔ STOP HEATING" if heater_on else "🚀 START HEATING"
-        if st.button(btn_text, type="primary", use_container_width=True):
-            send_tuya_command(TUYA_HEATER_ID, 'switch', not heater_on)
-            st.rerun()
-            
+        # Control Row
+        st.write("") 
+        b1, b2, b3 = st.columns([1, 1, 2])
+        with b1:
+            if st.button("❄️ -1°", use_container_width=True):
+                send_tuya_command(current_house_config["heater_id"], 'temp_set', target_temp - 1)
+                st.rerun()
+        with b2:
+            if st.button("🔥 +1°", use_container_width=True):
+                send_tuya_command(current_house_config["heater_id"], 'temp_set', target_temp + 1)
+                st.rerun()
+        with b3:
+            btn_text = "⛔ STOP HEATING" if heater_on else "🚀 START HEATING"
+            btn_type = "primary" if not heater_on else "secondary"
+            if st.button(btn_text, type=btn_type, use_container_width=True):
+                send_tuya_command(current_house_config["heater_id"], 'switch', not heater_on)
+                st.rerun()
+    else:
+        st.warning("⚠️ Connected, but Device is Offline")
 else:
-    st.warning("⚠️ Heater Offline")
+    st.info(f"ℹ️ No smart heaters configured for {selected_house_name} yet.")
 
-# 5. Footer / Sync
+# 6. Footer
 st.markdown("---")
 if st.button("🔄 Force Refresh Data", use_container_width=True):
     st.cache_data.clear()
