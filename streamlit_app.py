@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 from tuya_connector import TuyaOpenAPI
 
-# --- 1. PAGE CONFIG MUST BE FIRST ---
+# --- 1. PAGE CONFIG ---
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
 # --- 2. HIDE STREAMLIT STYLE ---
@@ -21,84 +21,56 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 
 # --- 3. PASSWORD PROTECTION ---
 def check_password():
-    """Returns `True` if the user had the correct password."""
-
+    if st.session_state.get("password_correct", False): return True
+    
     def password_entered():
-        """Checks whether a password entered by the user is correct."""
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store the password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
-    if st.session_state.get("password_correct", False):
-        return True
-
-    st.text_input(
-        "🔒 Enter Password", type="password", on_change=password_entered, key="password"
-    )
-    
-    if "password_correct" in st.session_state:
-        st.error("😕 Password incorrect")
-        
+    st.text_input("🔒 Enter Password", type="password", on_change=password_entered, key="password")
+    if "password_correct" in st.session_state: st.error("😕 Password incorrect")
     return False
 
-if not check_password():
-    st.stop()
+if not check_password(): st.stop()
 
-# --- 4. YOUR APP STARTS HERE ---
-
-# --- CONFIGURATION (UPDATED FROM DEC 2025 BILLS) ---
+# --- 4. APP CONFIGURATION ---
 REGION = "SE3"
-IS_VILLA = True 
 
-# --- TUYA DEVICES CONFIG ---
+# --- TUYA KEYS (Verified) ---
 TUYA_ACCESS_ID = "qdqkmyefdpqav3ckvnxm"      
 TUYA_ACCESS_SECRET = "c1b019580ece45a2902c9d0df19a8e02"     
 TUYA_ENDPOINT = "https://openapi.tuyaeu.com"
+TUYA_PLUG_ID = "364820008cce4e2efeda"       # Smart Plug
+TUYA_HEATER_ID = "bf070e912f4a1df81dakvu"   # Office Heater
 
-# 1. SMART PLUG (Power)
-TUYA_PLUG_ID = "364820008cce4e2efeda"
+# --- EXACT FEE CALIBRATION (NOV/DEC BILLS) ---
+# 1. Ellevio Grid (Inc VAT): Transfer (6.25) + Tax (54.88)
+GRID_TOTAL_INC_VAT = 61.13  
 
-# 2. OFFICE HEATER (Temp Control)
-TUYA_HEATER_ID = "bf070e912f4a1df81dakvu" 
+# 2. Fortum Add-ons (Ex VAT): 
+# Markup (2.00) + Certs (1.90) + Variable (11.67)
+FORTUM_ADDONS_EX_VAT = 15.57 
 
-# PLUG SETTINGS
-PLUG_SCALING_FACTOR = 10.0 
+def get_total_price_per_kwh(spot_price_ore_ex_vat):
+    """
+    Calculates the EXACT price you pay for 1 kWh at a specific hour.
+    Formula: ((Spot + FortumFees) * 1.25 VAT) + GridFeesIncVAT
+    """
+    electricity_part_inc_vat = (spot_price_ore_ex_vat + FORTUM_ADDONS_EX_VAT) * 1.25
+    total_price = electricity_part_inc_vat + GRID_TOTAL_INC_VAT
+    return total_price
 
-# --- FEES & TAXES (CALIBRATED DEC 2025) ---
-# Ellevio: 6.25 (Transfer) + 54.88 (Tax) = 61.13 öre/kWh (All Inc VAT)
-GRID_VARIABLE_FEE_INC_VAT = 61.13    
-
-# Fortum Add-ons (Ex VAT): 
-# 2.00 (Markup) + 1.90 (Cert) + 11.67 (Variable) = 15.57 öre/kWh
-FORTUM_ADDONS_EX_VAT = 15.57  
-
-# Monthly Fixed Costs (Inc VAT)
-ELLEVIO_MONTHLY_FIXED = 365.00  
-ELLEVIO_PEAK_FEE_PER_KW = 81.25 
-FORTUM_BASE_FEE = 69.00
-FORTUM_PRISKOLLEN = 49.00
-
-def get_total_price(spot_ore):
-    # 1. Electricity: (Spot Price + Fortum Add-ons) * 1.25 VAT
-    elec_part = (spot_ore + FORTUM_ADDONS_EX_VAT) * 1.25
-    
-    # 2. Grid: Already includes VAT from your bill
-    grid_part = GRID_VARIABLE_FEE_INC_VAT
-    
-    return elec_part + grid_part
-
+# --- TUYA CONNECT ---
 def get_tuya_status(device_id):
-    if "YOUR_" in TUYA_ACCESS_ID: return None, "Keys not set."
     try:
         openapi = TuyaOpenAPI(TUYA_ENDPOINT, TUYA_ACCESS_ID, TUYA_ACCESS_SECRET)
         openapi.connect()
         response = openapi.get(f'/v1.0/devices/{device_id}/status')
-        if not response['success']: return None, response.get('msg', 'Error')
-        return response['result'], None
-    except Exception as e:
-        return None, str(e)
+        return response['result'] if response['success'] else None
+    except: return None
 
 def send_tuya_command(device_id, code, value):
     try:
@@ -107,11 +79,11 @@ def send_tuya_command(device_id, code, value):
         commands = {'commands': [{'code': code, 'value': value}]}
         openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
         return True
-    except:
-        return False
+    except: return False
 
-@st.cache_data(ttl=900)
-def fetch_data():
+# --- FETCH PRICES ---
+@st.cache_data(ttl=900) # Update cache every 15 mins
+def fetch_hourly_prices():
     tz = pytz.timezone('Europe/Stockholm')
     today = datetime.now(tz)
     dates = [today, today + timedelta(days=1)]
@@ -122,212 +94,129 @@ def fetch_data():
         url = f"https://www.elprisetjustnu.se/api/v1/prices/{date_str}_{REGION}.json"
         try:
             r = requests.get(url, timeout=5)
-            if r.status_code == 200:
-                all_data.extend(r.json())
-        except:
-            pass
+            if r.status_code == 200: all_data.extend(r.json())
+        except: pass
             
     if not all_data: return None, None
 
     rows = []
     for hour in all_data:
         start = datetime.fromisoformat(hour['time_start'])
-        spot_ore = hour['SEK_per_kWh'] * 100
-        total_ore = get_total_price(spot_ore)
+        spot_ore = hour['SEK_per_kWh'] * 100 # API is in SEK, convert to öre
+        
+        # KEY CALCULATION
+        total_ore = get_total_price_per_kwh(spot_ore)
+        
         rows.append({
-            "Time": start, "Hour": start.hour,
-            "Total Price": round(total_ore, 2), "Spot Price": round(spot_ore, 2),
-            "Color": "#ff4b4b" if total_ore > 200 else "#00c853",
-            "Opacity": 1.0
+            "Time": start, 
+            "Hour": start.hour,
+            "Total Price": round(total_ore, 2), 
+            "Spot Price": round(spot_ore, 2),
+            "Color": "#d32f2f" if total_ore > 200 else ("#fbc02d" if total_ore > 100 else "#388e3c")
         })
     
     df = pd.DataFrame(rows)
     df.drop_duplicates(subset=['Time'], inplace=True)
-    fetch_time = datetime.now(tz).strftime("%H:%M")
-    return df, fetch_time
+    return df, datetime.now(tz)
 
+# --- MAIN APP UI ---
 col1, col2 = st.columns([3, 1])
 with col1: st.title("⚡ Power Monitor")
 with col2: 
-    if st.button("🔄 Refresh"):
-        st.cache_data.clear()
-        st.rerun()
+    if st.button("🔄 Refresh"): st.cache_data.clear(); st.rerun()
 
-# --- FETCH DATA ---
-plug_data, plug_err = get_tuya_status(TUYA_PLUG_ID)
-live_power_w = 0.0; total_kwh_accumulated = 0.0
-if plug_data:
-    for item in plug_data:
-        if item['code'] in ['cur_power', 'power']: live_power_w = item['value'] / 10.0
-        if item['code'] in ['add_ele', 'total_forward_energy', 'energy_total']: total_kwh_accumulated = item['value'] 
-live_power_kw = live_power_w / 1000.0
+# 1. Fetch Data
+plug_status = get_tuya_status(TUYA_PLUG_ID)
+heater_status = get_tuya_status(TUYA_HEATER_ID)
+df, last_updated = fetch_hourly_prices()
 
-heater_data, heater_err = get_tuya_status(TUYA_HEATER_ID)
-target_temp = 20; current_temp = 0; heater_on = False; heater_online = False
-if heater_data:
-    heater_online = True
-    for item in heater_data:
-        if item['code'] == 'temp_set': target_temp = item['value']
-        if item['code'] == 'temp_current': current_temp = item['value']
-        if item['code'] == 'switch': heater_on = item['value']
+# 2. Parse Devices
+live_power_w = 0.0
+if plug_status:
+    for i in plug_status:
+        if i['code'] == 'cur_power': live_power_w = i['value'] / 10.0
 
-# --- UI START ---
-selected_house = st.selectbox("Select Property", ["Main House", "Guest House"])
-df, last_updated = fetch_data()
+current_temp = 0; target_temp = 20; heater_on = False
+if heater_status:
+    for i in heater_status:
+        if i['code'] == 'temp_current': current_temp = i['value']
+        if i['code'] == 'temp_set': target_temp = i['value']
+        if i['code'] == 'switch': heater_on = i['value']
 
-if df is None:
-    st.error("Data Error")
-else:
-    tz = pytz.timezone('Europe/Stockholm')
-    now = datetime.now(tz)
-    st.caption(f"Last updated: {last_updated}")
+# 3. Determine CURRENT Price
+tz = pytz.timezone('Europe/Stockholm')
+now = datetime.now(tz)
+current_price_ore = 0.0
 
-    with st.expander("🧮 Calculators & Bill Estimator", expanded=True):
-        tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
-        
-        with tab1:
-            st.info(f"Analysis for: **{selected_house}**")
-            
-            if selected_house == "Guest House":
-                if live_power_w > 0:
-                    st.success(f"🔌 **LIVE Power:** {live_power_w:.1f} W ({live_power_kw:.3f} kW)")
-                else:
-                    st.info(f"🔌 **Office Heater:** Idle (0 W)")
-
-                st.markdown("---")
-                st.subheader("🔥 Climate Control")
-                if heater_online:
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Room Temp", f"{current_temp}°C")
-                    c2.metric("Target", f"{target_temp}°C")
-                    c3.metric("State", "ON" if heater_on else "OFF", delta="Heating" if heater_on else "Off")
-                    
-                    sc1, sc2, sc3 = st.columns([1, 1, 2])
-                    with sc1:
-                        if st.button("❄️ -1°"):
-                            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp - 1)
-                            st.rerun()
-                    with sc2:
-                        if st.button("🔥 +1°"):
-                            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp + 1)
-                            st.rerun()
-                    with sc3:
-                        if st.button(f"Turn {'OFF' if heater_on else 'ON'}", use_container_width=True, type="primary" if not heater_on else "secondary"):
-                            send_tuya_command(TUYA_HEATER_ID, 'switch', not heater_on)
-                            st.rerun()
-                else:
-                    st.warning("Heater Offline")
-
-                st.markdown("---")
-                machine_options = ["Office Heater (Guest House)", "Sauna (2h)"]
-            else:
-                machine_options = ["Heaters (PAX)", "Dishwasher (1.5h)", "Washing Machine (2h)"]
-            
-            appliance = st.selectbox("Machine", machine_options)
-            
-            avg_price_total = df['Total Price'].mean() / 100
-            usage_kw = 0.0; duration = 0.0
-
-            if "Office Heater" in appliance:
-                usage_kw = live_power_kw if live_power_kw > 0 else 1.0
-                duration = 1.0
-            elif "Heaters (PAX)" in appliance:
-                num_heaters = st.slider("Heaters?", 1, 10, 5)
-                usage_kw = num_heaters * 0.8; duration = 1.0
-            elif "Sauna" in appliance: usage_kw = 6.0; duration=2.0
-            elif "Dishwasher" in appliance: usage_kw = 1.2; duration=1.5
-            elif "Washing" in appliance: usage_kw = 1.5; duration=2.0
-            
-            curr_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
-            
-            if not curr_row.empty:
-                price_now = curr_row.iloc[0]['Total Price'] / 100
-                cost_now = price_now * usage_kw * duration
-
-                if "Office Heater" in appliance:
-                    st.write(f"Run Rate NOW: **{cost_now:.2f} kr / hour**")
-                    st.markdown(f"### 📉 Total Lifetime Cost")
-                    if total_kwh_accumulated > 0:
-                         total_kwh_real = total_kwh_accumulated / PLUG_SCALING_FACTOR
-                         estimated_cost_accum = total_kwh_real * avg_price_total 
-                         st.write(f"**{estimated_cost_accum:.2f} kr**")
-                         st.caption(f"Based on Plug Counter: {total_kwh_real:.2f} kWh")
-                    else:
-                        st.caption("No history data available yet.")
-                else:
-                    st.write(f"Run **NOW**: **{cost_now:.2f} kr**")
-
-        with tab2:
-            st.subheader("🔮 Invoice Predictor")
-            has_priskollen = st.checkbox("Include 'Priskollen' (49kr)?", value=True)
-            fortum_fixed_calc = FORTUM_BASE_FEE + (FORTUM_PRISKOLLEN if has_priskollen else 0)
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.markdown("### 🏠 Main")
-                main_kwh = st.number_input("kWh", value=1680)
-                main_peak = st.number_input("Peak (kW)", value=7.9)
-                
-                # Grid Cost = Fixed + Variable + Peak
-                grid_cost = ELLEVIO_MONTHLY_FIXED + \
-                            (main_kwh * (GRID_VARIABLE_FEE_INC_VAT / 100)) + \
-                            (main_peak * ELLEVIO_PEAK_FEE_PER_KW)
-                
-                # Electricity Cost = Fixed + (Spot + Addons)*VAT
-                # Note: Rough estimate using Avg Spot
-                est_spot_price = 70.0 
-                elec_cost = fortum_fixed_calc + \
-                            (main_kwh * ((est_spot_price + FORTUM_ADDONS_EX_VAT) * 1.25)/100)
-
-                st.caption(f"Est: {grid_cost + elec_cost:.0f} kr")
-
-            with col_b:
-                st.markdown("### 🏚️ Guest")
-                guest_kwh = st.number_input("Guest kWh", value=658)
-                default_guest_peak = max(3.6, live_power_kw)
-                guest_peak = st.number_input("Peak (kW)", value=default_guest_peak)
-                
-                g_grid = ELLEVIO_MONTHLY_FIXED + \
-                         (guest_kwh * (GRID_VARIABLE_FEE_INC_VAT / 100)) + \
-                         (guest_peak * ELLEVIO_PEAK_FEE_PER_KW)
-                
-                g_elec = fortum_fixed_calc + \
-                         (guest_kwh * ((est_spot_price + FORTUM_ADDONS_EX_VAT) * 1.25)/100)
-
-                st.caption(f"Est: {g_grid + g_elec:.0f} kr")
-            
-            st.divider()
-            st.metric("TOTAL FOR BOTH", f"{(grid_cost + elec_cost + g_grid + g_elec):.0f} kr")
-
-    # --- DASHBOARD ---
+if df is not None:
+    # Filter for THIS specific hour
     current_row = df[(df['Time'].dt.hour == now.hour) & (df['Time'].dt.date == now.date())]
     if not current_row.empty:
-        price = current_row.iloc[0]['Total Price']
-        spot = current_row.iloc[0]['Spot Price']
+        current_price_ore = current_row.iloc[0]['Total Price']
+        spot_now = current_row.iloc[0]['Spot Price']
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Price", f"{price:.2f} öre", delta_color="inverse", 
-                    delta="- Low" if price < 150 else "+ High")
-        with col2:
-             # Just showing grid variable part here for reference
-             st.caption(f"Spot: {spot} | Grid: {GRID_VARIABLE_FEE_INC_VAT:.1f}")
-
-    st.subheader("Price Forecast (24h)")
-    start_view = now - timedelta(hours=2)
-    chart_data = df[df['Time'] >= start_view]
+        # Display BIG Price
+        st.metric(
+            label=f"Current Price ({now.strftime('%H:%M')})", 
+            value=f"{current_price_ore:.2f} öre/kWh",
+            delta=f"Spot: {spot_now:.1f} öre",
+            delta_color="off"
+        )
     
-    bars = alt.Chart(chart_data).mark_bar().encode(
+    # Chart
+    st.subheader("Price Forecast (24h)")
+    # Highlight current hour in chart
+    df['Active'] = df['Time'].apply(lambda x: 1.0 if x.hour == now.hour and x.date() == now.date() else 0.4)
+    
+    chart = alt.Chart(df[df['Time'] >= now - timedelta(hours=2)]).mark_bar().encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M')),
         y=alt.Y('Total Price'),
         color=alt.Color('Color', scale=None),
-        opacity=alt.Opacity('Opacity', scale=None),
-        tooltip=['Time', 'Total Price']
-    )
-    st.altair_chart(bars.properties(height=300), use_container_width=True)
+        opacity=alt.Opacity('Active', legend=None),
+        tooltip=['Time', 'Total Price', 'Spot Price']
+    ).properties(height=250)
+    st.altair_chart(chart, use_container_width=True)
 
-    st.markdown("### 🎨 Signal Guide")
-    c1, c2, c3 = st.columns(3)
-    with c1: st.success("🟢 **SAFE**"); st.caption("Night / Wknd")
-    with c2: st.warning("🟢 **CAUTION**"); st.caption("Day 07-20")
-    with c3: st.error("🔴 **EXPENSIVE**"); st.caption("> 2.00 SEK")
+# 4. Heater Control & Cost
+st.markdown("---")
+st.subheader("🔥 Guest House Control")
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Room Temp", f"{current_temp} °C")
+c2.metric("Target", f"{target_temp} °C")
+c3.metric("Heater State", "ON" if heater_on else "OFF")
+
+# Calculate "Run Rate" (Cost per hour RIGHT NOW)
+cost_per_hour_kr = (live_power_w / 1000.0) * (current_price_ore / 100.0)
+
+if heater_status:
+    if live_power_w > 10:
+        st.success(f"⚡ **Heating Active:** Consuming {live_power_w:.0f} W")
+        st.write(f"💸 **Cost Right Now:** {cost_per_hour_kr:.2f} kr / hour")
+    else:
+        st.info("💤 Heater is Idle (0 W)")
+
+    # Controls
+    cc1, cc2, cc3 = st.columns([1,1,2])
+    with cc1:
+        if st.button("❄️ -1°"):
+            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp - 1)
+            st.rerun()
+    with cc2:
+        if st.button("🔥 +1°"):
+            send_tuya_command(TUYA_HEATER_ID, 'temp_set', target_temp + 1)
+            st.rerun()
+    with cc3:
+        if st.button(f"Turn {'OFF' if heater_on else 'ON'}", type="primary" if not heater_on else "secondary", use_container_width=True):
+            send_tuya_command(TUYA_HEATER_ID, 'switch', not heater_on)
+            st.rerun()
+else:
+    st.error("⚠️ Heater Offline")
+
+# 5. Simple Estimator (Footer)
+st.markdown("---")
+with st.expander("📊 Quick Estimates"):
+    st.caption("Based on your REAL live 'Kvartspris' contract.")
+    st.write(f"**Grid Fees (Fixed per kWh):** {GRID_TOTAL_INC_VAT} öre")
+    st.write(f"**Fortum Add-ons (Ex VAT):** {FORTUM_ADDONS_EX_VAT} öre")
+    st.info("Prices update automatically every hour.")
