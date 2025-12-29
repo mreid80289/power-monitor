@@ -9,7 +9,6 @@ from tuya_connector import TuyaOpenAPI
 # --- 1. PAGE CONFIG & DARK MODERN CSS ---
 st.set_page_config(page_title="Power Monitor", page_icon="⚡", layout="centered")
 
-# Custom CSS for "Cyberpunk/Modern Dark" Look
 st.markdown("""
     <style>
     /* Force Dark Background */
@@ -183,8 +182,7 @@ if df is not None:
         current_price_ore = current_row.iloc[0]['Total Price']
         spot_now = current_row.iloc[0]['Spot Price']
 
-# --- SECTION 1: CALCULATORS & CONTROLS (THE FEATURE YOU MISSED) ---
-# If Guest House, we show the SMART CONTROL first, but inside the same visual flow
+# --- SECTION 1: SMART CONTROLS (Guest House Only) ---
 if current_house_config["has_smart_devices"]:
     st.markdown("### 🔥 Climate Control")
     # Smart Status Box
@@ -207,49 +205,57 @@ if current_house_config["has_smart_devices"]:
                 send_tuya_command(current_house_config["heater_id"], 'switch', not heater_on); st.rerun()
     st.markdown("---")
 
-# THE CALCULATOR EXPANDER (RESTORED EXACTLY)
+# --- SECTION 2: CALCULATORS (UPDATED) ---
 with st.expander("🧮 Calculators & Bill Estimator", expanded=True):
     tab1, tab2 = st.tabs(["Appliance Cost", "Invoice Predictor"])
     
     with tab1:
         st.info(f"Analysis for: **{selected_house_name}**")
         
-        # List of appliances
+        # Configuration for Appliances
+        # Type: "quantity" (count heaters/lights) or "duration" (run washer for hours)
         apps = {
-            "Heaters (Standard)": 1000,
-            "Washing Machine": 2000,
-            "Dryer": 2500,
-            "Oven": 3000,
-            "Sauna": 6000,
-            "PC / TV": 200
+            "Heaters (Standard 1000W)": {"watts": 1000, "type": "quantity"},
+            "Lights (Standard 60W)":    {"watts": 60,   "type": "quantity"},
+            "Washing Machine":          {"watts": 2000, "type": "duration"},
+            "Dryer":                    {"watts": 2500, "type": "duration"},
+            "Oven":                     {"watts": 3000, "type": "duration"},
+            "Sauna":                    {"watts": 6000, "type": "duration"},
+            "PC / TV":                  {"watts": 200,  "type": "duration"}
         }
         
         # Dropdown
-        app_choice = st.selectbox("Machine", list(apps.keys()))
-        wattage = apps[app_choice]
+        app_choice = st.selectbox("Select Appliance", list(apps.keys()))
+        selected_data = apps[app_choice]
+        wattage = selected_data["watts"]
         
-        # Slider
-        count = st.slider("Duration (Hours)", 1, 10, 1)
-        
-        # Calculation
-        cost_now = (wattage / 1000.0) * count * (current_price_ore / 100.0)
-        st.markdown(f"### Run NOW: :green[{cost_now:.2f} kr]")
+        # Dynamic Slider
+        if selected_data["type"] == "quantity":
+            count = st.slider(f"Number of Units", 1, 20, 1)
+            # Formula: (Watts * Count * Price) / 100 = Cost per hour for ALL units
+            total_watts = wattage * count
+            cost_now = (total_watts / 1000.0) * (current_price_ore / 100.0)
+            label_text = "Cost per Hour (Run ALL)"
+        else:
+            duration = st.slider(f"Duration (Hours)", 1, 10, 1)
+            # Formula: (Watts * Hours * Price) / 100 = Total Cost for duration
+            cost_now = (wattage / 1000.0) * duration * (current_price_ore / 100.0)
+            label_text = "Total Cost for this Duration"
+            
+        st.markdown(f"### {label_text}: :green[{cost_now:.2f} kr]")
 
     with tab2:
         st.write("Invoice estimation coming soon based on historic data.")
 
-# --- SECTION 2: BIG PRICE DISPLAY ---
+# --- SECTION 3: BIG PRICE DISPLAY ---
 st.markdown("---")
-# Use columns to get the "Spot | Grid" text next to the big number if desired, or below.
 st.metric(label="Total Price", value=f"{current_price_ore:.2f} öre")
 st.caption(f"Spot: {spot_now:.2f} | Grid: {GRID_TOTAL_INC_VAT:.2f}")
 
-# --- SECTION 3: GRAPH (NEON GREEN) ---
+# --- SECTION 4: GRAPH (NEON GREEN) ---
 st.subheader("Price Forecast (24h)")
 if df is not None:
-    # Active Bar Highlighting
     df['Opacity'] = df['Time'].apply(lambda x: 1.0 if x.hour == now.hour and x.date() == now.date() else 0.4)
-    
     chart = alt.Chart(df[df['Time'] >= now - timedelta(hours=2)]).mark_bar(cornerRadius=4).encode(
         x=alt.X('Time', axis=alt.Axis(format='%H:%M', title=None, domain=False, tickSize=0, labelColor='#888')),
         y=alt.Y('Total Price', axis=alt.Axis(title=None, domain=False, tickSize=0, labelColor='#888')),
@@ -257,10 +263,9 @@ if df is not None:
         opacity=alt.Opacity('Opacity', legend=None),
         tooltip=['Time', 'Total Price']
     ).properties(height=250).configure_view(strokeWidth=0).configure_axis(grid=False)
-    
     st.altair_chart(chart, use_container_width=True)
 
-# --- SECTION 4: SIGNAL GUIDE (RESTORED) ---
+# --- SECTION 5: SIGNAL GUIDE ---
 st.subheader("🎨 Signal Guide")
 c1, c2, c3 = st.columns(3)
 with c1: st.success("🟢 SAFE\n\nNight / Wknd")
