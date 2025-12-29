@@ -1,4 +1,6 @@
 streamlit
 requests
 pandas
+altair
+pytz
 tuya-connector-python
