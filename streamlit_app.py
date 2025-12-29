@@ -242,42 +242,11 @@ if df is not None:
     st.altair_chart(chart, use_container_width=True)
 
 # 5. HEATER CONTROL SECTION
-st.markdown("### 🔥 Climate Control")
-
 if current_house_config["has_smart_devices"]:
+    st.markdown("### 🔥 Climate Control")
     if heater_status:
         # Status Row
         c_temp, c_targ, c_stat = st.columns(3)
         with c_temp: st.metric("Indoors", f"{current_temp}°")
         with c_targ: st.metric("Target", f"{target_temp}°")
-        with c_stat: 
-            status_color = "🟢" if heater_on else "⚫"
-            st.metric("State", f"{status_color} {'ON' if heater_on else 'OFF'}")
-
-        # Control Row
-        st.write("") 
-        b1, b2, b3 = st.columns([1, 1, 2])
-        with b1:
-            if st.button("❄️ -1°", use_container_width=True):
-                send_tuya_command(current_house_config["heater_id"], 'temp_set', target_temp - 1)
-                st.rerun()
-        with b2:
-            if st.button("🔥 +1°", use_container_width=True):
-                send_tuya_command(current_house_config["heater_id"], 'temp_set', target_temp + 1)
-                st.rerun()
-        with b3:
-            btn_text = "⛔ STOP HEATING" if heater_on else "🚀 START HEATING"
-            btn_type = "primary" if not heater_on else "secondary"
-            if st.button(btn_text, type=btn_type, use_container_width=True):
-                send_tuya_command(current_house_config["heater_id"], 'switch', not heater_on)
-                st.rerun()
-    else:
-        st.warning("⚠️ Connected, but Device is Offline")
-else:
-    st.info(f"ℹ️ No smart heaters configured for {selected_house_name} yet.")
-
-# 6. Footer
-st.markdown("---")
-if st.button("🔄 Force Refresh Data", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
+        with c_
